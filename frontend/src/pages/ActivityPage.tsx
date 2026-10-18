@@ -1,222 +1,358 @@
-import React, { useEffect, useState } from 'react';
-import {
-  History,
-  Search
-} from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
-import type { ActivityLog, Project } from '../types';
-import { LoadingSpinner, ErrorState, EmptyState } from '../components/Common';
-import type { NavigationTab } from '../layouts/AppLayout';
+import type {
+  ActivityLog,
+  Project,
+  User,
+  NavigationTab,
+} from '../types';
+import {
+  PageHeader,
+  Panel,
+  LoadingSpinner,
+  ErrorState,
+  EmptyState,
+  StatusBadge,
+  RingLegend,
+  formatDateTime,
+} from '../components/Common';
+import {
+  Clock,
+  Search,
+  ExternalLink,
+} from 'lucide-react';
 
 interface ActivityPageProps {
-  onNavigate: (tab: NavigationTab, params?: any) => void;
+  onNavigate: (tab: NavigationTab, params?: Record<string, string>) => void;
 }
 
-export const ActivityPage: React.FC<ActivityPageProps> = () => {
+export const ActivityPage: React.FC<ActivityPageProps> = ({ onNavigate }) => {
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
-  const [selectedEntityType, setSelectedEntityType] = useState<string>('');
+  const [users, setUsers] = useState<User[]>([]);
+
+  const [projectFilter, setProjectFilter] = useState('');
+  const [entityTypeFilter, setEntityTypeFilter] = useState('');
+  const [userFilter, setUserFilter] = useState('');
   const [search, setSearch] = useState('');
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchLogs = async () => {
+  const loadLogs = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [logsRes, projRes] = await Promise.all([
+      const [logsRes, projRes, usersRes] = await Promise.all([
         api.getActivityLogs({
-          project_id: selectedProjectId || undefined,
-          entity_type: selectedEntityType || undefined,
-          limit: 100
+          project_id: projectFilter || undefined,
+          entity_type: entityTypeFilter || undefined,
+          user_id: userFilter || undefined,
+          limit: 100,
         }),
-        api.getProjects()
+        api.getProjects(),
+        api.getUsers(),
       ]);
 
-      setLogs(logsRes);
-      setProjects(projRes);
+      setLogs(logsRes || []);
+      setProjects(projRes || []);
+      setUsers(usersRes || []);
     } catch (err: any) {
-      setError(err.message || 'Error communicating with DataForge backend');
+      setError(err.message || 'Failed to load audit activity logs');
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectFilter, entityTypeFilter, userFilter]);
 
   useEffect(() => {
-    fetchLogs();
-  }, [selectedProjectId, selectedEntityType]);
+    loadLogs();
+  }, [loadLogs]);
 
-  const filteredLogs = logs.filter(l =>
-    l.action.toLowerCase().includes(search.toLowerCase()) ||
-    l.entity_type.toLowerCase().includes(search.toLowerCase()) ||
-    l.entity_id.toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredLogs = logs.filter((log) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      log.action.toLowerCase().includes(q) ||
+      log.entity_type.toLowerCase().includes(q) ||
+      (log.user_name || '').toLowerCase().includes(q) ||
+      (log.entity_name || '').toLowerCase().includes(q) ||
+      String(log.details || '').toLowerCase().includes(q)
+    );
+  });
 
-  const getActionBadgeColor = (action: string) => {
-    if (action.includes('CREATE') || action.includes('REGISTER')) return 'var(--accent-emerald)';
-    if (action.includes('UPDATE') || action.includes('DRIFT')) return 'var(--accent-cyan)';
-    if (action.includes('DELETE') || action.includes('DROP')) return 'var(--accent-rose)';
-    return 'var(--accent-indigo)';
+  const handleNavigateEntity = (log: ActivityLog) => {
+    if (!log.entity_id) return;
+    if (log.entity_type === 'DATASET') {
+      onNavigate('dataset-detail', { datasetId: log.entity_id });
+    } else if (log.entity_type === 'DATASET_VERSION') {
+      onNavigate('versions');
+    } else if (log.entity_type === 'PROJECT') {
+      onNavigate('projects', { projectId: log.entity_id });
+    } else if (log.entity_type === 'MODEL') {
+      onNavigate('models', { modelId: log.entity_id });
+    } else if (log.entity_type === 'EXPERIMENT') {
+      onNavigate('experiments', { experimentId: log.entity_id });
+    }
   };
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Header */}
-      <div>
-        <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>
-          Audit Logs & System Activity
-        </h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-          Immutable PostgreSQL activity journal recording all schema modifications, registrations, and training events.
-        </p>
-      </div>
+  if (loading && logs.length === 0 && !projectFilter && !entityTypeFilter && !userFilter) {
+    return <LoadingSpinner message="Loading immutable PostgreSQL activity audit log..." />;
+  }
 
-      {/* Filter and Search Bar */}
-      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-        {/* Project Selector */}
-        <div style={{ minWidth: '200px' }}>
+  if (error && logs.length === 0) {
+    return <ErrorState message={error} onRetry={loadLogs} />;
+  }
+
+  return (
+    <div>
+      <PageHeader
+        eyebrow="IMMUTABLE AUDIT TRAIL & SYSTEM EVENTS"
+        title="LABORATORY ACTIVITY LOGS"
+        subtitle="Chronological record of dataset commits, version uploads, model registrations, experiment runs, and membership changes."
+      />
+
+      {/* Filter Bar */}
+      <Panel style={{ marginBottom: 16, padding: '14px 18px' }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
+            <Search
+              size={14}
+              style={{
+                position: 'absolute',
+                left: 12,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: 'var(--text-muted)',
+              }}
+            />
+            <input
+              type="text"
+              className="df-input"
+              placeholder="Search audit events by action, user, entity, or payload..."
+              style={{ paddingLeft: 34 }}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
           <select
-            value={selectedProjectId}
-            onChange={(e) => setSelectedProjectId(e.target.value)}
-            style={{
-              width: '100%',
-              backgroundColor: 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '10px 14px',
-              color: 'var(--text-primary)',
-              fontSize: '14px',
-              outline: 'none',
-            }}
+            className="df-select"
+            style={{ width: 200 }}
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+            aria-label="Filter by Project"
           >
             <option value="">All Projects</option>
-            {projects.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="df-select"
+            style={{ width: 185 }}
+            value={entityTypeFilter}
+            onChange={(e) => setEntityTypeFilter(e.target.value)}
+            aria-label="Filter by Entity Type"
+          >
+            <option value="">All Entity Types</option>
+            <option value="PROJECT">PROJECT</option>
+            <option value="DATASET">DATASET</option>
+            <option value="DATASET_VERSION">DATASET_VERSION</option>
+            <option value="MODEL">MODEL</option>
+            <option value="MODEL_VERSION">MODEL_VERSION</option>
+            <option value="EXPERIMENT">EXPERIMENT</option>
+          </select>
+
+          <select
+            className="df-select"
+            style={{ width: 190 }}
+            value={userFilter}
+            onChange={(e) => setUserFilter(e.target.value)}
+            aria-label="Filter by User"
+          >
+            <option value="">All Researchers</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
             ))}
           </select>
         </div>
+      </Panel>
 
-        {/* Entity Type Selector */}
-        <div style={{ minWidth: '180px' }}>
-          <select
-            value={selectedEntityType}
-            onChange={(e) => setSelectedEntityType(e.target.value)}
+      <Panel
+        title={`CHRONOLOGICAL AUDIT STREAM (${filteredLogs.length})`}
+        subtitle="Ordered newest to oldest from PostgreSQL activity_logs table"
+        rightSlot={
+          <div style={{ display: 'flex', gap: 14 }}>
+            <RingLegend label="DATASET / VERSION" color="lime" />
+            <RingLegend label="MODEL / EXPERIMENT" color="amber" />
+          </div>
+        }
+      >
+        {filteredLogs.length === 0 ? (
+          <EmptyState
+            icon={<Clock size={22} />}
+            title="No Audit Events Match Filters"
+            description="Adjust project, entity type, or researcher filters to inspect historical events."
+          />
+        ) : (
+          <div
             style={{
-              width: '100%',
-              backgroundColor: 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '10px 14px',
-              color: 'var(--text-primary)',
-              fontSize: '14px',
-              outline: 'none',
+              position: 'relative',
+              paddingLeft: 24,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
             }}
           >
-            <option value="">All Entity Types</option>
-            <option value="PROJECT">Project</option>
-            <option value="DATASET">Dataset</option>
-            <option value="DATASET_VERSION">Dataset Version</option>
-            <option value="MODEL">Model</option>
-            <option value="MODEL_VERSION">Model Version</option>
-            <option value="EXPERIMENT">Experiment</option>
-          </select>
-        </div>
+            <div
+              style={{
+                position: 'absolute',
+                left: 9,
+                top: 16,
+                bottom: 16,
+                width: 2,
+                background: 'rgba(255,255,255,0.08)',
+              }}
+            />
 
-        {/* Search */}
-        <div style={{ position: 'relative', flex: 1, minWidth: '280px' }}>
-          <Search size={18} color="var(--text-muted)" style={{ position: 'absolute', left: '12px', top: '11px' }} />
-          <input
-            type="text"
-            placeholder="Search by action, entity type, or identifier..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{
-              width: '100%',
-              backgroundColor: 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '10px 14px 10px 38px',
-              color: 'var(--text-primary)',
-              fontSize: '14px',
-              outline: 'none',
-            }}
-          />
-        </div>
-      </div>
+            {filteredLogs.map((log) => {
+              const isDataEvent =
+                log.entity_type === 'DATASET' || log.entity_type === 'DATASET_VERSION';
+              const isModelOrExp =
+                log.entity_type === 'MODEL' ||
+                log.entity_type === 'MODEL_VERSION' ||
+                log.entity_type === 'EXPERIMENT';
 
-      {/* Activity Table */}
-      {loading ? (
-        <LoadingSpinner message="Querying PostgreSQL activity log table..." />
-      ) : error ? (
-        <ErrorState title="Activity Logs Error" message={error} onRetry={fetchLogs} />
-      ) : filteredLogs.length === 0 ? (
-        <EmptyState
-          title="No Logs Recorded"
-          description="No activity matching your selected filters."
-          icon={<History size={36} />}
-        />
-      ) : (
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden'
-        }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-            <thead>
-              <tr style={{ backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-                <th style={{ padding: '14px 20px' }}>Action</th>
-                <th style={{ padding: '14px 16px' }}>Entity Type</th>
-                <th style={{ padding: '14px 16px' }}>Entity ID</th>
-                <th style={{ padding: '14px 16px' }}>User ID</th>
-                <th style={{ padding: '14px 20px', textAlign: 'right' }}>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredLogs.map(log => {
-                const badgeColor = getActionBadgeColor(log.action);
-                return (
-                  <tr key={log.id} style={{ borderBottom: '1px solid rgba(36, 48, 68, 0.4)' }}>
-                    <td style={{ padding: '14px 20px' }}>
-                      <span style={{
-                        display: 'inline-block',
-                        padding: '3px 8px',
-                        borderRadius: 'var(--radius-sm)',
-                        fontFamily: 'JetBrains Mono, monospace',
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        backgroundColor: `${badgeColor}15`,
-                        color: badgeColor,
-                        border: `1px solid ${badgeColor}33`
-                      }}>
+              return (
+                <div
+                  key={log.id}
+                  style={{
+                    position: 'relative',
+                    padding: '14px 18px',
+                    borderRadius: 14,
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 16,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <span
+                    style={{
+                      position: 'absolute',
+                      left: -20,
+                      top: 20,
+                      width: 12,
+                      height: 12,
+                      borderRadius: '50%',
+                      background: '#090A09',
+                      border: `2.5px solid ${
+                        isDataEvent
+                          ? 'var(--accent-lime)'
+                          : isModelOrExp
+                            ? 'var(--accent-amber)'
+                            : '#F4F5F4'
+                      }`,
+                    }}
+                  />
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6,
+                      flex: 1,
+                      minWidth: 260,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <span
+                        className="df-mono"
+                        style={{
+                          fontWeight: 700,
+                          fontSize: '0.84rem',
+                          color: isDataEvent
+                            ? 'var(--accent-lime)'
+                            : isModelOrExp
+                              ? 'var(--accent-amber)'
+                              : '#FFF',
+                        }}
+                      >
                         {log.action}
                       </span>
-                    </td>
+                      <StatusBadge status={log.entity_type} size="sm" />
+                      {log.entity_name && (
+                        <span
+                          style={{
+                            fontSize: '0.78rem',
+                            color: '#FFF',
+                            fontWeight: 600,
+                          }}
+                        >
+                          {log.entity_name}
+                        </span>
+                      )}
+                    </div>
 
-                    <td style={{ padding: '14px 16px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {log.entity_type}
-                    </td>
+                    {log.details && (
+                      <div
+                        className="df-mono"
+                        style={{
+                          fontSize: '0.75rem',
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        {typeof log.details === 'string'
+                          ? log.details
+                          : JSON.stringify(log.details)}
+                      </div>
+                    )}
+                  </div>
 
-                    <td style={{ padding: '14px 16px', fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-muted)', fontSize: '12px' }}>
-                      {log.entity_id}
-                    </td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#FFF' }}>
+                        {log.user_name || 'System Process'}
+                      </div>
+                      <div
+                        className="df-mono"
+                        style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}
+                      >
+                        {formatDateTime(log.created_at)}
+                      </div>
+                    </div>
 
-                    <td style={{ padding: '14px 16px', fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-secondary)', fontSize: '12px' }}>
-                      {log.user_id ? `${log.user_id.slice(0, 8)}...` : 'system'}
-                    </td>
-
-                    <td style={{ padding: '14px 20px', textAlign: 'right', color: 'var(--text-muted)', fontSize: '12px' }}>
-                      {new Date(log.created_at).toLocaleString()}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+                    {log.entity_id && (
+                      <button
+                        type="button"
+                        className="df-btn df-btn--ghost df-btn--sm"
+                        onClick={() => handleNavigateEntity(log)}
+                        title="Open Associated Entity"
+                      >
+                        Inspect <ExternalLink size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 };
-

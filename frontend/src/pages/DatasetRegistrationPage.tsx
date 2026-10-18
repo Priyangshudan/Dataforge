@@ -1,89 +1,249 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  FolderGit2,
   Upload,
   FileSpreadsheet,
-  Layers,
-  GitBranch,
-  CheckCircle,
-  ArrowRight,
+  CheckCircle2,
+  Plus,
   ArrowLeft,
-  Hash,
-  Plus
+  ArrowUpRight,
+  Database,
+  GitBranch,
+  AlertTriangle,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { Project, User } from '../types';
-import { LoadingSpinner, ToastNotification, Modal } from '../components/Common';
-import type { NavigationTab } from '../layouts/AppLayout';
+import type {
+  Project,
+  User,
+  Dataset,
+  DatasetVersion,
+  VersionDetailResponse,
+  NavigationTab,
+} from '../types';
+import {
+  LoadingSpinner,
+  ErrorState,
+  ToastNotification,
+  Modal,
+  PageHeader,
+  Panel,
+  StatusBadge,
+  HashBadge,
+  formatBytes,
+} from '../components/Common';
 
 interface DatasetRegistrationPageProps {
   initialProjectId?: string;
+  initialDatasetId?: string;
   onNavigate: (tab: NavigationTab, params?: any) => void;
 }
 
 export const DatasetRegistrationPage: React.FC<DatasetRegistrationPageProps> = ({
   initialProjectId,
+  initialDatasetId,
   onNavigate,
 }) => {
-  const [currentStep, setCurrentStep] = useState(1);
+  const [mode, setMode] = useState<'new-dataset' | 'existing-dataset'>(
+    initialDatasetId ? 'existing-dataset' : 'new-dataset'
+  );
   const [projects, setProjects] = useState<Project[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [loadingInitial, setLoadingInitial] = useState(true);
+  const [existingDatasets, setExistingDatasets] = useState<Dataset[]>([]);
+  const [existingVersions, setExistingVersions] = useState<DatasetVersion[]>([]);
+  const [loadingPrereqs, setLoadingPrereqs] = useState(true);
+  const [prereqError, setPrereqError] = useState<string | null>(null);
 
-  // Form State
+  // New Dataset Form Fields
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId || '');
   const [datasetName, setDatasetName] = useState('');
   const [datasetDesc, setDatasetDesc] = useState('');
-  const [datasetTags, setDatasetTags] = useState('raw, benchmark');
+  const [datasetSource, setDatasetSource] = useState('MANUAL_UPLOAD');
+  const [datasetType, setDatasetType] = useState('TABULAR');
+  const [datasetTags, setDatasetTags] = useState('tabular, benchmark');
 
-  // File & Parsing State
+  // Existing Dataset Mode Fields
+  const [targetDatasetId, setTargetDatasetId] = useState(initialDatasetId || '');
+  const [parentVersionId, setParentVersionId] = useState('');
+
+  // Version & File Upload Fields
   const [file, setFile] = useState<File | null>(null);
+  const [versionLabel, setVersionLabel] = useState('v1.0.0');
+  const [commitMessage, setCommitMessage] = useState(
+    'Initial CSV ingestion and schema extraction'
+  );
+  const [selectedUserId, setSelectedUserId] = useState('');
+
+  // Client-Side CSV Inspection Preview
   const [filePreview, setFilePreview] = useState<{
-    rowCount: number;
+    estimatedRows: number;
     headers: string[];
     sampleRows: string[][];
     inferredTypes: { name: string; type: string }[];
   } | null>(null);
+  const [fileValidationError, setFileValidationError] = useState<string | null>(null);
 
-  // Version Commit State
-  const [versionLabel, setVersionLabel] = useState('v1.0.0');
-  const [commitMessage, setCommitMessage] = useState('Initial dataset registration');
-  const [selectedUserId, setSelectedUserId] = useState('');
-
-  // Submission State
+  // Submission & Confirmed Result State
   const [submitting, setSubmitting] = useState(false);
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [stageMessage, setStageMessage] = useState<string | null>(null);
+  const [confirmedResult, setConfirmedResult] = useState<{
+    dataset: Dataset;
+    versionDetail?: VersionDetailResponse;
+  } | null>(null);
+  const [submitError, setSubmitError] = useState<{
+    code?: string;
+    message: string;
+  } | null>(null);
 
-  // Create Project In-Wizard Modal
+  // Quick Create Project Modal
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDesc, setNewProjectDesc] = useState('');
 
-  useEffect(() => {
-    const fetchPrereqs = async () => {
-      try {
-        const [projRes, usersRes] = await Promise.all([
-          api.getProjects(),
-          api.getUsers()
-        ]);
-        setProjects(projRes);
-        if (!selectedProjectId && projRes.length > 0) {
-          setSelectedProjectId(projRes[0].id);
-        }
-        setUsers(usersRes);
-        if (usersRes.length > 0) {
-          setSelectedUserId(usersRes[0].id);
-        }
-      } catch (err: any) {
-        setToast({ type: 'error', message: err.message || 'Failed to load projects/users' });
-      } finally {
-        setLoadingInitial(false);
+  const [toast, setToast] = useState<{
+    type: 'success' | 'error' | 'warning';
+    message: string;
+  } | null>(null);
+
+  const fetchPrereqs = async () => {
+    setLoadingPrereqs(true);
+    setPrereqError(null);
+    try {
+      const [projRes, usersRes, dsRes] = await Promise.all([
+        api.getProjects(),
+        api.getUsers(),
+        api.getDatasets(),
+      ]);
+      setProjects(projRes);
+      if (!selectedProjectId && projRes.length > 0) {
+        setSelectedProjectId(projRes[0].id);
       }
-    };
+      setUsers(usersRes);
+      if (usersRes.length > 0) {
+        setSelectedUserId(usersRes[0].id);
+      }
+      setExistingDatasets(dsRes);
+      if (!targetDatasetId && dsRes.length > 0) {
+        setTargetDatasetId(dsRes[0].id);
+      }
+    } catch (err: any) {
+      setPrereqError(
+        err.message || 'Unable to load workspace projects and users from backend'
+      );
+    } finally {
+      setLoadingPrereqs(false);
+    }
+  };
+
+  useEffect(() => {
     fetchPrereqs();
   }, []);
 
-  // Quick Create Project without leaving wizard
+  // Load versions when existing dataset changes
+  useEffect(() => {
+    if (mode === 'existing-dataset' && targetDatasetId) {
+      api
+        .getDatasetVersions(targetDatasetId)
+        .then((vers) => {
+          setExistingVersions(vers);
+          if (vers.length > 0) {
+            setParentVersionId(vers[0].id);
+            const nextNum = Number(vers[0].version_number || vers.length) + 1;
+            setVersionLabel(`v${nextNum}.0.0`);
+          } else {
+            setParentVersionId('');
+            setVersionLabel('v1.0.0');
+          }
+        })
+        .catch(() => {
+          setExistingVersions([]);
+          setParentVersionId('');
+        });
+    }
+  }, [mode, targetDatasetId]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFileValidationError(null);
+    setSubmitError(null);
+    const selected = e.target.files?.[0];
+    if (!selected) {
+      setFile(null);
+      setFilePreview(null);
+      return;
+    }
+
+    if (!selected.name.toLowerCase().endsWith('.csv') && selected.type !== 'text/csv') {
+      setFileValidationError('Only comma-separated values (.csv) files are accepted.');
+      setFile(null);
+      setFilePreview(null);
+      return;
+    }
+
+    if (selected.size === 0) {
+      setFileValidationError('The selected CSV file is empty (0 bytes).');
+      setFile(null);
+      setFilePreview(null);
+      return;
+    }
+
+    setFile(selected);
+
+    if (mode === 'new-dataset' && !datasetName.trim()) {
+      const cleanName = selected.name
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[_-]+/g, ' ');
+      setDatasetName(cleanName.charAt(0).toUpperCase() + cleanName.slice(1));
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = (event.target?.result as string) || '';
+      const lines = text.split(/\r\n|\n/).filter((line) => line.trim().length > 0);
+      if (lines.length < 2) {
+        setFileValidationError(
+          'CSV file must include a header row and at least one data row.'
+        );
+        return;
+      }
+
+      const headers = lines[0]
+        .split(',')
+        .map((h) => h.trim().replace(/^"|"$/g, ''));
+      const sampleRows = lines.slice(1, 6).map((line) =>
+        line.split(',').map((v) => v.trim().replace(/^"|"$/g, ''))
+      );
+
+      const inferredTypes = headers.map((header, colIdx) => {
+        let isNumeric = true;
+        let isInteger = true;
+        let isBoolean = true;
+        for (const row of sampleRows) {
+          const val = row[colIdx];
+          if (val === undefined || val === '') continue;
+          const lower = val.toLowerCase();
+          if (lower !== 'true' && lower !== 'false') isBoolean = false;
+          if (isNaN(Number(val))) {
+            isNumeric = false;
+            isInteger = false;
+          } else if (!Number.isInteger(Number(val))) {
+            isInteger = false;
+          }
+        }
+        let type = 'TEXT';
+        if (isBoolean) type = 'BOOLEAN';
+        else if (isInteger) type = 'INTEGER';
+        else if (isNumeric) type = 'NUMERIC';
+        return { name: header, type };
+      });
+
+      setFilePreview({
+        estimatedRows: lines.length - 1,
+        headers,
+        sampleRows,
+        inferredTypes,
+      });
+    };
+    reader.readAsText(selected.slice(0, 65536));
+  };
+
   const handleQuickCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newProjectName.trim() || !selectedUserId) return;
@@ -91,763 +251,787 @@ export const DatasetRegistrationPage: React.FC<DatasetRegistrationPageProps> = (
       const res = await api.createProject({
         name: newProjectName.trim(),
         description: newProjectDesc.trim() || undefined,
-        owner_id: selectedUserId
+        owner_id: selectedUserId,
       });
-      setProjects(prev => [res, ...prev]);
+      setProjects((prev) => [res, ...prev]);
       setSelectedProjectId(res.id);
       setIsProjectModalOpen(false);
       setNewProjectName('');
       setNewProjectDesc('');
-      setToast({ type: 'success', message: `Project "${res.name}" created and selected!` });
+      setToast({
+        type: 'success',
+        message: `Project "${res.name}" created and selected.`,
+      });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Failed to create project' });
+      setToast({
+        type: 'error',
+        message: err.message || 'Failed to create project',
+      });
     }
   };
 
-  // CSV Parsing Client-Side for instant preview & validation
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const selected = e.target.files[0];
-      setFile(selected);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitError(null);
+    setConfirmedResult(null);
 
-      if (!datasetName) {
-        const cleanName = selected.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
-        setDatasetName(cleanName.charAt(0).toUpperCase() + cleanName.slice(1));
+    if (mode === 'new-dataset') {
+      if (!selectedProjectId || !datasetName.trim()) {
+        setSubmitError({
+          message: 'Project and Dataset Name are required to register a dataset.',
+        });
+        return;
       }
-
-      // Read first chunk for schema inference & preview
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const text = event.target?.result as string;
-        if (!text) return;
-
-        const lines = text.split(/\r\n|\n/).filter(line => line.trim().length > 0);
-        if (lines.length > 0) {
-          const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-          const sampleRows = lines.slice(1, 6).map(line =>
-            line.split(',').map(v => v.trim().replace(/^"|"$/g, ''))
-          );
-
-          // Infer types based on samples
-          const inferred = headers.map((header, colIdx) => {
-            let isNumeric = true;
-            let isBoolean = true;
-            for (const row of sampleRows) {
-              const val = row[colIdx];
-              if (!val) continue;
-              if (isNaN(Number(val))) isNumeric = false;
-              if (val !== 'true' && val !== 'false' && val !== '1' && val !== '0') isBoolean = false;
-            }
-            let type = 'VARCHAR';
-            if (isBoolean) type = 'BOOLEAN';
-            else if (isNumeric) type = 'NUMERIC';
-            return { name: header, type };
-          });
-
-          setFilePreview({
-            rowCount: lines.length - 1,
-            headers,
-            sampleRows,
-            inferredTypes: inferred
-          });
-        }
-      };
-      reader.readAsText(selected.slice(0, 50000));
-    }
-  };
-
-  // Final Submission Step: Create Dataset -> Upload Version
-  const handleFinalSubmit = async () => {
-    if (!file || !selectedProjectId || !datasetName.trim()) {
-      setToast({ type: 'error', message: 'Missing required registration details.' });
-      return;
+    } else {
+      if (!targetDatasetId || !file) {
+        setSubmitError({
+          message: 'Target Dataset and CSV file are required to commit a version.',
+        });
+        return;
+      }
     }
 
     setSubmitting(true);
     try {
-      // 1. Create Dataset Entity
-      const tagsArray = datasetTags.split(',').map(t => t.trim()).filter(Boolean);
-      const newDataset = await api.createDataset({
-        project_id: selectedProjectId,
-        name: datasetName.trim(),
-        description: datasetDesc.trim() || undefined,
-        tags: tagsArray,
-        created_by: selectedUserId || undefined
-      });
+      let targetDataset: Dataset;
 
-      // 2. Upload CSV & Create Immutable Version Record via FormData
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('version_label', versionLabel.trim() || 'v1.0.0');
-      formData.append('commit_message', commitMessage.trim() || 'Initial registration');
-      if (selectedUserId) {
-        formData.append('created_by', selectedUserId);
-      }
-
-      await api.createDatasetVersion(newDataset.id, formData);
-
-      // Success! Navigate directly to the dataset detail view
-      setToast({ type: 'success', message: 'Dataset successfully registered and version committed!' });
-      setTimeout(() => {
-        onNavigate('dataset-detail', { datasetId: newDataset.id });
-      }, 1000);
-    } catch (err: any) {
-      if (err.code === 'DUPLICATE_FILE') {
-        setToast({ type: 'error', message: 'Exact duplicate file detected (matching SHA-256 hash).' });
+      if (mode === 'new-dataset') {
+        setStageMessage('Step 1/2: Registering dataset record in PostgreSQL...');
+        const tagsArray = datasetTags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean);
+        targetDataset = await api.createDataset({
+          project_id: selectedProjectId,
+          name: datasetName.trim(),
+          description: datasetDesc.trim() || undefined,
+          source: datasetSource.trim() || 'MANUAL_UPLOAD',
+          type: datasetType.trim() || 'TABULAR',
+          tags: tagsArray,
+          created_by: selectedUserId || undefined,
+        });
       } else {
-        setToast({ type: 'error', message: err.message || 'Registration transaction failed.' });
+        targetDataset =
+          existingDatasets.find((d) => d.id === targetDatasetId) ||
+          (await api.getDataset(targetDatasetId));
       }
+
+      let versionResponse: VersionDetailResponse | undefined;
+      if (file) {
+        setStageMessage(
+          'Step 2/2: Uploading multipart CSV, verifying SHA-256 deduplication & profiling columns...'
+        );
+        const formData = new FormData();
+        formData.append('file', file);
+        if (versionLabel.trim()) formData.append('version_label', versionLabel.trim());
+        if (commitMessage.trim()) formData.append('commit_message', commitMessage.trim());
+        if (mode === 'existing-dataset' && parentVersionId) {
+          formData.append('parent_version_id', parentVersionId);
+        }
+        if (selectedUserId) {
+          formData.append('created_by', selectedUserId);
+        }
+
+        versionResponse = await api.createDatasetVersion(targetDataset.id, formData);
+      }
+
+      setConfirmedResult({
+        dataset: targetDataset,
+        versionDetail: versionResponse,
+      });
+      setToast({
+        type: 'success',
+        message: versionResponse
+          ? `Dataset "${targetDataset.name}" (${versionResponse.version.version_label}) confirmed by PostgreSQL!`
+          : `Dataset "${targetDataset.name}" registered in catalog!`,
+      });
+    } catch (err: any) {
+      setSubmitError({
+        code: err.code || 'UPLOAD_ERROR',
+        message:
+          err.code === 'DUPLICATE_FILE'
+            ? `Exact duplicate CSV rejected by SHA-256 deduplication policy: ${err.message}`
+            : err.message || 'Dataset registration or file upload failed.',
+      });
     } finally {
       setSubmitting(false);
+      setStageMessage(null);
     }
   };
 
-  const steps = [
-    { number: 1, title: 'Project Context', icon: FolderGit2 },
-    { number: 2, title: 'CSV Ingestion', icon: Upload },
-    { number: 3, title: 'Dataset Metadata', icon: Layers },
-    { number: 4, title: 'Schema Verification', icon: Hash },
-    { number: 5, title: 'Version Configuration', icon: GitBranch },
-    { number: 6, title: 'Confirm & Commit', icon: CheckCircle },
-  ];
+  if (loadingPrereqs) {
+    return <LoadingSpinner message="Loading workspace projects and user identities..." />;
+  }
 
-  if (loadingInitial) return <LoadingSpinner message="Setting up Dataset Registration Wizard..." />;
+  if (prereqError) {
+    return (
+      <ErrorState
+        title="Registration Prerequisites Unavailable"
+        message={prereqError}
+        onRetry={fetchPrereqs}
+      />
+    );
+  }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-      {/* Wizard Header */}
-      <div>
-        <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>
-          Register Dataset
-        </h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-          6-Step guided pipeline to ingest, validate, profile, and commit a dataset version.
-        </p>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <PageHeader
+        title="DATASET REGISTRATION & CSV UPLOAD"
+        badge="SHA-256 VERIFIED"
+        subtitle="Register a new dataset or commit an immutable CSV version with automatic column schema extraction."
+        actions={
+          <button
+            type="button"
+            onClick={() => onNavigate('datasets')}
+            className="df-btn df-btn-secondary"
+          >
+            <ArrowLeft size={15} /> Back to Catalog
+          </button>
+        }
+      />
+
+      {/* Mode Switcher Pills */}
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={() => {
+            setMode('new-dataset');
+            setConfirmedResult(null);
+            setSubmitError(null);
+          }}
+          className={`df-pill-control ${mode === 'new-dataset' ? 'active' : ''}`}
+        >
+          <Database size={15} color={mode === 'new-dataset' ? 'var(--accent-lime)' : undefined} />
+          <span>Register New Dataset + Upload CSV</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setMode('existing-dataset');
+            setConfirmedResult(null);
+            setSubmitError(null);
+          }}
+          className={`df-pill-control ${mode === 'existing-dataset' ? 'active' : ''}`}
+        >
+          <GitBranch
+            size={15}
+            color={mode === 'existing-dataset' ? 'var(--accent-lime)' : undefined}
+          />
+          <span>Commit New Version to Existing Dataset</span>
+        </button>
       </div>
 
-      {/* Stepper Progress Bar */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--radius-lg)',
-        padding: '16px 24px',
-        overflowX: 'auto',
-        gap: '12px'
-      }}>
-        {steps.map((s, idx) => {
-          const isDone = currentStep > s.number;
-          const isCurrent = currentStep === s.number;
-          return (
-            <React.Fragment key={s.number}>
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                opacity: isCurrent ? 1 : isDone ? 0.8 : 0.4,
-              }}>
-                <div style={{
-                  width: '32px',
-                  height: '32px',
+      {/* Confirmed Backend Receipt Banner */}
+      {confirmedResult && (
+        <div
+          className="df-panel"
+          style={{
+            borderColor: 'var(--accent-lime)',
+            backgroundColor: 'var(--bg-surface)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: '20px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
+              <div
+                style={{
+                  width: '44px',
+                  height: '44px',
                   borderRadius: '50%',
-                  backgroundColor: isCurrent ? 'var(--accent-cyan)' : isDone ? 'var(--accent-emerald)' : 'var(--bg-card)',
-                  color: isCurrent || isDone ? '#FFFFFF' : 'var(--text-muted)',
-                  border: isCurrent ? 'none' : '1px solid var(--border)',
+                  backgroundColor: 'var(--accent-lime)',
+                  color: 'var(--text-on-accent)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                }}>
-                  {isDone ? <CheckCircle size={16} /> : s.number}
-                </div>
-                <span style={{
-                  fontSize: '13px',
-                  fontWeight: isCurrent ? 600 : 500,
-                  color: isCurrent ? 'var(--text-primary)' : 'var(--text-secondary)',
-                  whiteSpace: 'nowrap'
-                }}>
-                  {s.title}
-                </span>
-              </div>
-              {idx < steps.length - 1 && (
-                <div style={{
-                  flex: 1,
-                  height: '2px',
-                  backgroundColor: isDone ? 'var(--accent-emerald)' : 'var(--border)',
-                  minWidth: '24px'
-                }} />
-              )}
-            </React.Fragment>
-          );
-        })}
-      </div>
-
-      {/* Step Content Container */}
-      <div style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--radius-lg)',
-        padding: '32px',
-        minHeight: '400px'
-      }}>
-        {/* Step 1: Project Selection */}
-        {currentStep === 1 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '600px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              Step 1: Assign Project Context
-            </h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              Select the DataForge project workspace that will own this dataset.
-            </p>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                Target Project <span style={{ color: 'var(--accent-rose)' }}>*</span>
-              </label>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <select
-                  value={selectedProjectId}
-                  onChange={(e) => setSelectedProjectId(e.target.value)}
-                  style={{
-                    flex: 1,
-                    backgroundColor: 'var(--bg-card)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '10px 14px',
-                    color: 'var(--text-primary)',
-                    fontSize: '14px',
-                    outline: 'none',
-                  }}
-                >
-                  {projects.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.slug})</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => setIsProjectModalOpen(true)}
-                  style={{
-                    backgroundColor: 'var(--bg-card)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--accent-cyan)',
-                    padding: '0 16px',
-                    borderRadius: 'var(--radius-sm)',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px'
-                  }}
-                >
-                  <Plus size={16} /> New
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                Author / User Context
-              </label>
-              <select
-                value={selectedUserId}
-                onChange={(e) => setSelectedUserId(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '10px 14px',
-                  color: 'var(--text-primary)',
-                  fontSize: '14px',
-                  outline: 'none',
+                  flexShrink: 0,
                 }}
               >
-                {users.map(u => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
-                ))}
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* Step 2: File Upload */}
-        {currentStep === 2 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              Step 2: Upload CSV File
-            </h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              Select a valid tabular CSV file. The backend will calculate its SHA-256 checksum and extract schema metadata.
-            </p>
-
-            <div style={{
-              border: '2px dashed var(--border)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '48px 24px',
-              textAlign: 'center',
-              backgroundColor: 'rgba(21, 30, 46, 0.5)',
-              position: 'relative',
-              cursor: 'pointer'
-            }}>
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                onChange={handleFileChange}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: '100%',
-                  opacity: 0,
-                  cursor: 'pointer'
-                }}
-              />
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-                <div style={{
-                  padding: '16px',
-                  borderRadius: '50%',
-                  backgroundColor: 'rgba(14, 165, 233, 0.1)',
-                  color: 'var(--accent-cyan)'
-                }}>
-                  <FileSpreadsheet size={36} />
-                </div>
-                {file ? (
-                  <div>
-                    <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--accent-emerald)' }}>
-                      Selected: {file.name}
-                    </h4>
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginTop: '4px' }}>
-                      {(file.size / 1024).toFixed(1)} KB &bull; Type: {file.type || 'text/csv'}
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                      Click or drag and drop your CSV file here
-                    </h4>
-                    <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '4px' }}>
-                      Accepts standard comma-delimited .csv files up to 50MB
-                    </p>
+                <CheckCircle2 size={22} />
+              </div>
+              <div>
+                <h3
+                  className="font-display"
+                  style={{ fontSize: '22px', color: 'var(--accent-lime)' }}
+                >
+                  POSTGRESQL TRANSACTION CONFIRMED
+                </h3>
+                <p style={{ color: 'var(--text-primary)', fontSize: '14px', marginTop: '4px' }}>
+                  Dataset <strong>{confirmedResult.dataset.name}</strong> has been persisted.
+                </p>
+                {confirmedResult.versionDetail && (
+                  <div
+                    className="font-mono"
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '14px',
+                      marginTop: '12px',
+                      fontSize: '12px',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    <span>
+                      Version:{' '}
+                      <strong style={{ color: 'var(--accent-lime)' }}>
+                        {confirmedResult.versionDetail.version.version_label}
+                      </strong>
+                    </span>
+                    <span>
+                      Rows:{' '}
+                      <strong>
+                        {Number(
+                          confirmedResult.versionDetail.version.row_count
+                        ).toLocaleString()}
+                      </strong>
+                    </span>
+                    <span>
+                      Columns:{' '}
+                      <strong>{confirmedResult.versionDetail.columns.length}</strong>
+                    </span>
+                    <span>
+                      Size:{' '}
+                      <strong>
+                        {formatBytes(
+                          confirmedResult.versionDetail.version.file_size_bytes
+                        )}
+                      </strong>
+                    </span>
+                    <span>
+                      SHA-256:{' '}
+                      <HashBadge
+                        hash={confirmedResult.versionDetail.version.checksum_sha256}
+                        chars={16}
+                      />
+                    </span>
                   </div>
                 )}
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Step 3: Dataset Metadata */}
-        {currentStep === 3 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '640px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              Step 3: Define Dataset Metadata
-            </h3>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                Dataset Name <span style={{ color: 'var(--accent-rose)' }}>*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Credit Card Transaction Logs"
-                value={datasetName}
-                onChange={(e) => setDatasetName(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '10px 14px',
-                  color: 'var(--text-primary)',
-                  fontSize: '14px',
-                  outline: 'none',
-                }}
-              />
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                Description
-              </label>
-              <textarea
-                rows={3}
-                placeholder="Purpose, data gathering methodology, and feature characteristics..."
-                value={datasetDesc}
-                onChange={(e) => setDatasetDesc(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '10px 14px',
-                  color: 'var(--text-primary)',
-                  fontSize: '14px',
-                  outline: 'none',
-                }}
-              />
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                Tags (comma separated)
-              </label>
-              <input
-                type="text"
-                value={datasetTags}
-                onChange={(e) => setDatasetTags(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '10px 14px',
-                  color: 'var(--text-primary)',
-                  fontSize: '14px',
-                  outline: 'none',
-                }}
-              />
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() =>
+                  onNavigate('dataset-detail', {
+                    datasetId: confirmedResult.dataset.id,
+                  })
+                }
+                className="df-btn df-btn-lime"
+              >
+                Inspect Dataset Details <ArrowUpRight size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onNavigate('lineage', {
+                    datasetId: confirmedResult.dataset.id,
+                  })
+                }
+                className="df-btn df-btn-secondary"
+              >
+                Open Lineage Graph
+              </button>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Step 4: Schema Verification & Sample Table */}
-        {currentStep === 4 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              Step 4: Schema Verification & Inspection
-            </h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              Inferred columns and data types from the file preview. The backend will persist these column types into the PostgreSQL relational schema table.
-            </p>
-
-            {filePreview ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {/* Columns Inferred */}
-                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                  {filePreview.inferredTypes.map((col, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        padding: '6px 12px',
-                        borderRadius: 'var(--radius-sm)',
-                        backgroundColor: 'var(--bg-card)',
-                        border: '1px solid var(--border)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '13px'
-                      }}
-                    >
-                      <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{col.name}</span>
-                      <span style={{
-                        fontSize: '11px',
-                        fontFamily: 'JetBrains Mono, monospace',
-                        color: 'var(--accent-cyan)',
-                        backgroundColor: 'rgba(14, 165, 233, 0.1)',
-                        padding: '2px 6px',
-                        borderRadius: '4px'
-                      }}>
-                        {col.type}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Sample Data Preview Table */}
-                <div style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-md)',
-                  overflowX: 'auto',
-                  backgroundColor: 'var(--bg-card)'
-                }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-                        {filePreview.headers.map((h, i) => (
-                          <th key={i} style={{ padding: '8px 12px' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filePreview.sampleRows.map((row, rIdx) => (
-                        <tr key={rIdx} style={{ borderBottom: '1px solid rgba(36, 48, 68, 0.4)' }}>
-                          {row.map((val, cIdx) => (
-                            <td key={cIdx} style={{ padding: '8px 12px', color: 'var(--text-secondary)' }}>{val}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ) : (
-              <div style={{ color: 'var(--accent-rose)' }}>No preview available. Please upload a valid CSV.</div>
-            )}
-          </div>
-        )}
-
-        {/* Step 5: Version Configuration */}
-        {currentStep === 5 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '640px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              Step 5: Version & Commit Details
-            </h3>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                Version Label <span style={{ color: 'var(--accent-rose)' }}>*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. v1.0.0"
-                value={versionLabel}
-                onChange={(e) => setVersionLabel(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '10px 14px',
-                  color: 'var(--text-primary)',
-                  fontSize: '14px',
-                  fontFamily: 'JetBrains Mono, monospace',
-                  outline: 'none',
-                }}
-              />
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                Commit Message
-              </label>
-              <textarea
-                rows={3}
-                placeholder="Why is this dataset version being committed?"
-                value={commitMessage}
-                onChange={(e) => setCommitMessage(e.target.value)}
-                style={{
-                  width: '100%',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '10px 14px',
-                  color: 'var(--text-primary)',
-                  fontSize: '14px',
-                  outline: 'none',
-                }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Step 6: Confirmation & Final Commit */}
-        {currentStep === 6 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '640px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              Step 6: Review & Finalize Commit
-            </h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              Confirm all details before committing to PostgreSQL and the DataForge repository.
-            </p>
-
-            <div style={{
-              backgroundColor: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '20px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '12px',
-              fontSize: '13px'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Project:</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
-                  {projects.find(p => p.id === selectedProjectId)?.name}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Dataset Name:</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{datasetName}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Source File:</span>
-                <span style={{ color: 'var(--text-primary)' }}>{file?.name} ({(Number(file?.size || 0) / 1024).toFixed(1)} KB)</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Columns Detected:</span>
-                <span style={{ color: 'var(--accent-cyan)', fontFamily: 'JetBrains Mono, monospace' }}>
-                  {filePreview?.headers.length || 0} columns
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Version Label:</span>
-                <span style={{ color: 'var(--accent-emerald)', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                  {versionLabel}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Commit Message:</span>
-                <span style={{ color: 'var(--text-secondary)' }}>{commitMessage}</span>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Navigation Buttons */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <button
-          type="button"
-          disabled={currentStep === 1 || submitting}
-          onClick={() => setCurrentStep(prev => prev - 1)}
+      {/* Submission Error Banner */}
+      {submitError && (
+        <div
+          role="alert"
+          className="df-panel"
           style={{
-            padding: '10px 20px',
-            borderRadius: 'var(--radius-sm)',
-            border: '1px solid var(--border)',
-            color: currentStep === 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
-            fontSize: '14px',
-            fontWeight: 500,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            cursor: currentStep === 1 ? 'not-allowed' : 'pointer'
+            borderColor: 'var(--accent-amber)',
+            padding: '20px 24px',
           }}
         >
-          <ArrowLeft size={16} /> Back
-        </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <AlertTriangle size={20} color="var(--accent-amber)" />
+            <div>
+              <div
+                className="font-display"
+                style={{ fontSize: '18px', color: 'var(--accent-amber)' }}
+              >
+                REGISTRATION / UPLOAD REJECTED ({submitError.code || 'ERROR'})
+              </div>
+              <p style={{ color: 'var(--text-primary)', fontSize: '13.5px', marginTop: '2px' }}>
+                {submitError.message}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
-        {currentStep < 6 ? (
-          <button
-            type="button"
-            disabled={
-              (currentStep === 1 && !selectedProjectId) ||
-              (currentStep === 2 && !file) ||
-              (currentStep === 3 && !datasetName.trim())
-            }
-            onClick={() => setCurrentStep(prev => prev + 1)}
-            style={{
-              backgroundColor: 'var(--accent-cyan)',
-              color: '#FFFFFF',
-              padding: '10px 22px',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: '14px',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
+      {/* Main Registration & File Upload Grid */}
+      <form onSubmit={handleSubmit} className="df-dashboard-grid">
+        {/* Left Column: Dataset & Version Metadata Form */}
+        <Panel
+          title={
+            mode === 'new-dataset'
+              ? '1. DATASET IDENTITY & OWNERSHIP'
+              : '1. TARGET DATASET & LINEAGE PARENT'
+          }
+          subtitle="Specify relational project ownership and version commit parameters"
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {mode === 'new-dataset' ? (
+              <>
+                <div>
+                  <label className="df-label">Target Project Workspace *</label>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <select
+                      aria-label="Target Project Workspace"
+                      value={selectedProjectId}
+                      onChange={(e) => setSelectedProjectId(e.target.value)}
+                      required
+                      className="df-select"
+                    >
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} (/{p.slug})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setIsProjectModalOpen(true)}
+                      className="df-btn df-btn-secondary"
+                    >
+                      <Plus size={14} /> New
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="df-label">Dataset Name *</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Financial Transaction Streams"
+                    value={datasetName}
+                    onChange={(e) => setDatasetName(e.target.value)}
+                    required
+                    className="df-input"
+                  />
+                </div>
+
+                <div className="df-subgrid-2">
+                  <div>
+                    <label className="df-label">Data Type</label>
+                    <select
+                      value={datasetType}
+                      onChange={(e) => setDatasetType(e.target.value)}
+                      className="df-select"
+                    >
+                      <option value="TABULAR">TABULAR</option>
+                      <option value="TIMESERIES">TIMESERIES</option>
+                      <option value="FEATURE_MATRIX">FEATURE_MATRIX</option>
+                      <option value="BENCHMARK">BENCHMARK</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="df-label">Ingestion Source</label>
+                    <input
+                      type="text"
+                      value={datasetSource}
+                      onChange={(e) => setDatasetSource(e.target.value)}
+                      placeholder="MANUAL_UPLOAD, KAFKA_STREAM..."
+                      className="df-input font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="df-label">Description</label>
+                  <textarea
+                    rows={3}
+                    placeholder="Document dataset provenance, collection methodology, and target features..."
+                    value={datasetDesc}
+                    onChange={(e) => setDatasetDesc(e.target.value)}
+                    className="df-textarea"
+                  />
+                </div>
+
+                <div>
+                  <label className="df-label">Tags (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={datasetTags}
+                    onChange={(e) => setDatasetTags(e.target.value)}
+                    className="df-input"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className="df-label">Select Existing Dataset *</label>
+                  <select
+                    value={targetDatasetId}
+                    onChange={(e) => setTargetDatasetId(e.target.value)}
+                    required
+                    className="df-select"
+                  >
+                    {existingDatasets.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({d.project_name || 'Project'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="df-label">Parent Version (Lineage Derivation)</label>
+                  <select
+                    value={parentVersionId}
+                    onChange={(e) => setParentVersionId(e.target.value)}
+                    className="df-select font-mono"
+                  >
+                    <option value="">None (Root Version)</option>
+                    {existingVersions.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.version_label} ({v.row_count} rows • {v.file_name})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
+
+            <div
+              style={{
+                borderTop: '1px solid var(--border-subtle)',
+                paddingTop: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '14px',
+              }}
+            >
+              <div className="df-subgrid-2">
+                <div>
+                  <label className="df-label">Version Label</label>
+                  <input
+                    type="text"
+                    value={versionLabel}
+                    onChange={(e) => setVersionLabel(e.target.value)}
+                    placeholder="v1.0.0"
+                    className="df-input font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="df-label">Committed By (User)</label>
+                  <select
+                    value={selectedUserId}
+                    onChange={(e) => setSelectedUserId(e.target.value)}
+                    className="df-select"
+                  >
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} ({u.role})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="df-label">Version Commit Message</label>
+                <input
+                  type="text"
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  placeholder="Describe the schema or row modifications in this version..."
+                  className="df-input"
+                />
+              </div>
+            </div>
+          </div>
+        </Panel>
+
+        {/* Right Column: Multipart File Dropzone & Client-Side Schema Profiler */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
+          <Panel
+            title="2. MULTIPART CSV UPLOAD & VALIDATION"
+            subtitle="Backend parses CSV rows, computes SHA-256 hash, and enforces deduplication"
           >
-            Continue <ArrowRight size={16} />
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={handleFinalSubmit}
-            style={{
-              backgroundColor: 'var(--accent-emerald)',
-              color: '#FFFFFF',
-              padding: '10px 24px',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: '14px',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              opacity: submitting ? 0.7 : 1
-            }}
-          >
-            {submitting ? 'Registering & Committing...' : 'Commit Dataset Version'}
-          </button>
-        )}
-      </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <label
+                style={{
+                  border: `2px dashed ${
+                    file
+                      ? 'var(--accent-lime)'
+                      : fileValidationError
+                        ? 'var(--accent-amber)'
+                        : 'var(--border-strong)'
+                  }`,
+                  borderRadius: 'var(--radius-lg)',
+                  padding: '36px 24px',
+                  textAlign: 'center',
+                  backgroundColor: 'var(--bg-input)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '12px',
+                  transition: 'all var(--transition-fast)',
+                }}
+              >
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={handleFileChange}
+                  style={{ display: 'none' }}
+                />
+                <div
+                  style={{
+                    width: '54px',
+                    height: '54px',
+                    borderRadius: '50%',
+                    backgroundColor: file
+                      ? 'var(--accent-lime-dim)'
+                      : 'var(--bg-surface)',
+                    border: `1px solid ${
+                      file ? 'var(--accent-lime)' : 'var(--border)'
+                    }`,
+                    color: file ? 'var(--accent-lime)' : 'var(--text-secondary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {file ? <FileSpreadsheet size={24} /> : <Upload size={24} />}
+                </div>
+
+                {file ? (
+                  <div>
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        fontSize: '15px',
+                        color: 'var(--accent-lime)',
+                      }}
+                    >
+                      {file.name}
+                    </div>
+                    <div
+                      className="font-mono"
+                      style={{
+                        fontSize: '12px',
+                        color: 'var(--text-secondary)',
+                        marginTop: '4px',
+                      }}
+                    >
+                      {formatBytes(file.size)} &bull;{' '}
+                      {filePreview?.headers.length || 0} columns detected
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        fontSize: '15px',
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      Select a CSV file to upload
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '12.5px',
+                        color: 'var(--text-muted)',
+                        marginTop: '4px',
+                      }}
+                    >
+                      Standard comma-separated values (.csv) up to 50 MB
+                    </div>
+                  </div>
+                )}
+              </label>
+
+              {fileValidationError && (
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 'var(--radius-sm)',
+                    backgroundColor: 'var(--accent-amber-dim)',
+                    border: '1px solid var(--accent-amber-border)',
+                    color: 'var(--accent-amber)',
+                    fontSize: '12.5px',
+                  }}
+                >
+                  {fileValidationError}
+                </div>
+              )}
+
+              {/* Inferred Schema Preview */}
+              {filePreview && (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <span
+                      className="font-display"
+                      style={{ fontSize: '15px', color: 'var(--text-secondary)' }}
+                    >
+                      INFERRED COLUMN SCHEMA ({filePreview.inferredTypes.length})
+                    </span>
+                    <StatusBadge status="CSV READY" />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {filePreview.inferredTypes.map((col, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          padding: '5px 10px',
+                          borderRadius: 'var(--radius-pill)',
+                          backgroundColor: 'var(--bg-card)',
+                          border: '1px solid var(--border)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          fontSize: '12px',
+                        }}
+                      >
+                        <span style={{ fontWeight: 600 }}>{col.name}</span>
+                        <span
+                          className="font-mono"
+                          style={{
+                            fontSize: '10.5px',
+                            color: 'var(--accent-lime)',
+                          }}
+                        >
+                          {col.type}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Sample Rows Preview Table */}
+                  <div
+                    className="df-table-wrapper"
+                    style={{
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-sm)',
+                      maxHeight: '190px',
+                    }}
+                  >
+                    <table className="df-table" style={{ fontSize: '11.5px' }}>
+                      <thead>
+                        <tr>
+                          {filePreview.headers.map((h, i) => (
+                            <th key={i} style={{ padding: '8px 12px' }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filePreview.sampleRows.map((row, rIdx) => (
+                          <tr key={rIdx}>
+                            {row.map((val, cIdx) => (
+                              <td
+                                key={cIdx}
+                                className="font-mono"
+                                style={{ padding: '7px 12px', color: 'var(--text-secondary)' }}
+                              >
+                                {val}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Submit Button & Progress Feedback */}
+              <div style={{ marginTop: '8px' }}>
+                <button
+                  type="submit"
+                  disabled={submitting || (mode === 'existing-dataset' && !file)}
+                  className="df-btn df-btn-lime"
+                  style={{ width: '100%', padding: '13px 20px', fontSize: '14px' }}
+                >
+                  <Upload size={16} />
+                  {submitting
+                    ? stageMessage || 'Processing Multipart Upload...'
+                    : mode === 'new-dataset'
+                      ? file
+                        ? 'Register Dataset & Commit CSV Version'
+                        : 'Register Dataset Metadata Only'
+                      : 'Upload & Commit New Dataset Version'}
+                </button>
+              </div>
+            </div>
+          </Panel>
+        </div>
+      </form>
 
       {/* Modal: Quick Create Project */}
       <Modal
         isOpen={isProjectModalOpen}
         onClose={() => setIsProjectModalOpen(false)}
-        title="Add New Project"
+        title="QUICK CREATE PROJECT"
       >
-        <form onSubmit={handleQuickCreateProject} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <form
+          onSubmit={handleQuickCreateProject}
+          style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}
+        >
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              Project Name <span style={{ color: 'var(--accent-rose)' }}>*</span>
-            </label>
+            <label className="df-label">Project Name *</label>
             <input
               type="text"
-              placeholder="e.g. LLM Benchmark Suite"
+              placeholder="e.g. Genomic Variant Benchmark"
               value={newProjectName}
               onChange={(e) => setNewProjectName(e.target.value)}
               required
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '10px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px',
-                outline: 'none',
-              }}
+              className="df-input"
             />
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              Description
-            </label>
+            <label className="df-label">Description</label>
             <textarea
-              placeholder="Project purpose..."
+              rows={2}
               value={newProjectDesc}
               onChange={(e) => setNewProjectDesc(e.target.value)}
-              rows={2}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '10px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px',
-                outline: 'none',
-              }}
+              className="df-textarea"
             />
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
             <button
               type="button"
               onClick={() => setIsProjectModalOpen(false)}
-              style={{
-                padding: '8px 14px',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--border)',
-                color: 'var(--text-secondary)',
-                fontSize: '13px',
-              }}
+              className="df-btn df-btn-secondary"
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              style={{
-                backgroundColor: 'var(--accent-cyan)',
-                color: '#FFFFFF',
-                padding: '8px 16px',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '13px',
-                fontWeight: 600,
-              }}
-            >
-              Save Project
+            <button type="submit" className="df-btn df-btn-lime">
+              Create &amp; Select
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Toast Alert */}
       {toast && (
         <ToastNotification
           type={toast.type}

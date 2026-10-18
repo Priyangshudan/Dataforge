@@ -2,97 +2,140 @@ import React, { useEffect, useState } from 'react';
 import {
   Database,
   GitBranch,
-  Table,
   GitFork,
+  GitCompare,
   Plus,
-  ArrowRight,
+  Edit3,
+  ArrowLeft,
+  ArrowUpRight,
+  Brain,
+  FlaskConical,
   Sparkles,
-  TrendingDown
+  Activity,
+  Check,
+  X,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
   Dataset,
   DatasetVersion,
   DatasetColumn,
-  DatasetSimilarity,
-  VersionLineage
+  VersionLineage,
+  NavigationTab,
 } from '../types';
-import { LoadingSpinner, ErrorState, Modal, ToastNotification } from '../components/Common';
-import type { NavigationTab } from '../layouts/AppLayout';
+import {
+  LoadingSpinner,
+  ErrorState,
+  EmptyState,
+  Modal,
+  ToastNotification,
+  PageHeader,
+  Panel,
+  StatusBadge,
+  HashBadge,
+  DeltaStat,
+  formatBytes,
+  formatDateTime,
+} from '../components/Common';
 
 interface DatasetDetailPageProps {
   datasetId: string;
   onNavigate: (tab: NavigationTab, params?: any) => void;
 }
 
-export const DatasetDetailPage: React.FC<DatasetDetailPageProps> = ({ datasetId, onNavigate }) => {
+export const DatasetDetailPage: React.FC<DatasetDetailPageProps> = ({
+  datasetId,
+  onNavigate,
+}) => {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [versions, setVersions] = useState<DatasetVersion[]>([]);
-  const [activeTab, setActiveTab] = useState<'overview' | 'versions' | 'schema' | 'drift' | 'lineage'>('overview');
   const [selectedVersionId, setSelectedVersionId] = useState<string>('');
   const [columns, setColumns] = useState<DatasetColumn[]>([]);
+  const [versionLineage, setVersionLineage] = useState<VersionLineage | null>(null);
 
-  // Similarity & Drift State
-  const [compareVersionId, setCompareVersionId] = useState<string>('');
-  const [similarityResult, setSimilarityResult] = useState<DatasetSimilarity | null>(null);
-  const [driftResult, setDriftResult] = useState<DatasetSimilarity | null>(null);
-  const [analyzingDrift, setAnalyzingDrift] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Lineage State
-  const [lineageTree, setLineageTree] = useState<VersionLineage | null>(null);
+  // Edit Dataset Metadata State
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editStatus, setEditStatus] = useState('Active');
+  const [editTags, setEditTags] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
-  // New Version Modal
+  // Commit New Version Modal
   const [isVersionModalOpen, setIsVersionModalOpen] = useState(false);
   const [newVersionFile, setNewVersionFile] = useState<File | null>(null);
   const [newVersionLabel, setNewVersionLabel] = useState('');
   const [newCommitMessage, setNewCommitMessage] = useState('');
   const [submittingVersion, setSubmittingVersion] = useState(false);
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [toast, setToast] = useState<{
+    type: 'success' | 'error' | 'warning';
+    message: string;
+  } | null>(null);
 
   const fetchDatasetDetails = async () => {
+    if (!datasetId) {
+      // Fallback: load first available dataset if navigated without datasetId
+      try {
+        const list = await api.getDatasets({ limit: 1 });
+        if (list.length > 0) {
+          loadSpecificDataset(list[0].id);
+        } else {
+          setLoading(false);
+        }
+      } catch (err: any) {
+        setError(err.message || 'Unable to load dataset');
+        setLoading(false);
+      }
+      return;
+    }
+    await loadSpecificDataset(datasetId);
+  };
+
+  const loadSpecificDataset = async (id: string) => {
     setLoading(true);
     setError(null);
     try {
       const [dsRes, verRes] = await Promise.all([
-        api.getDataset(datasetId),
-        api.getDatasetVersions(datasetId)
+        api.getDataset(id),
+        api.getDatasetVersions(id),
       ]);
-
       setDataset(dsRes);
+      setEditName(dsRes.name);
+      setEditDesc(dsRes.description || '');
+      setEditStatus(dsRes.status || 'Active');
+      setEditTags((dsRes.tags || []).join(', '));
       setVersions(verRes);
+
       if (verRes.length > 0) {
-        const firstVer = verRes[0].id;
-        setSelectedVersionId(firstVer);
-        if (verRes.length > 1) {
-          setCompareVersionId(verRes[1].id);
-        }
-        loadVersionColumns(firstVer);
+        const firstVerId = verRes[0].id;
+        setSelectedVersionId(firstVerId);
+        await loadVersionContext(firstVerId);
+      } else {
+        setSelectedVersionId('');
+        setColumns([]);
+        setVersionLineage(null);
       }
     } catch (err: any) {
-      setError(err.message || 'Error communicating with DataForge backend');
+      setError(err.message || 'Failed to load dataset details from backend');
     } finally {
       setLoading(false);
     }
   };
 
-  const loadVersionColumns = async (verId: string) => {
+  const loadVersionContext = async (verId: string) => {
     try {
-      const res = await api.getVersion(verId);
-      setColumns(res.columns);
+      const [verDetail, linRes] = await Promise.all([
+        api.getVersion(verId),
+        api.getVersionLineage(verId),
+      ]);
+      setColumns(verDetail.columns || []);
+      setVersionLineage(linRes);
     } catch {
-      // Ignored
-    }
-  };
-
-  const loadVersionLineage = async (verId: string) => {
-    try {
-      const res = await api.getVersionLineage(verId);
-      setLineageTree(res);
-    } catch {
-      // Ignored
+      // Non-fatal if columns/lineage empty
     }
   };
 
@@ -100,48 +143,40 @@ export const DatasetDetailPage: React.FC<DatasetDetailPageProps> = ({ datasetId,
     fetchDatasetDetails();
   }, [datasetId]);
 
-  useEffect(() => {
-    if (selectedVersionId) {
-      loadVersionColumns(selectedVersionId);
-      loadVersionLineage(selectedVersionId);
-    }
-  }, [selectedVersionId]);
+  const handleSelectVersion = (verId: string) => {
+    setSelectedVersionId(verId);
+    loadVersionContext(verId);
+  };
 
-  // Run Similarity & Drift Analysis
-  const handleRunAnalysis = async () => {
-    if (!selectedVersionId || !compareVersionId || selectedVersionId === compareVersionId) {
-      setToast({ type: 'error', message: 'Please select two different versions to compare.' });
-      return;
-    }
-
-    setAnalyzingDrift(true);
+  const handleSaveDatasetEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dataset || !editName.trim()) return;
+    setSavingEdit(true);
     try {
-      const [simRes, driftRes] = await Promise.all([
-        api.checkSimilarity({
-          base_version_id: selectedVersionId,
-          compared_version_id: compareVersionId
-        }),
-        api.calculateDrift({
-          base_version_id: selectedVersionId,
-          compared_version_id: compareVersionId
-        })
-      ]);
-
-      setSimilarityResult(simRes);
-      setDriftResult(driftRes);
-      setToast({ type: 'success', message: 'Similarity and drift metrics computed successfully!' });
+      const tagsArr = editTags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const updated = await api.updateDataset(dataset.id, {
+        name: editName.trim(),
+        description: editDesc.trim(),
+        status: editStatus,
+        tags: tagsArr,
+      });
+      setDataset({ ...dataset, ...updated });
+      setIsEditing(false);
+      setToast({ type: 'success', message: 'Dataset metadata updated in PostgreSQL.' });
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Analysis calculation failed' });
+      setToast({ type: 'error', message: err.message || 'Failed to update dataset' });
     } finally {
-      setAnalyzingDrift(false);
+      setSavingEdit(false);
     }
   };
 
-  // Submit New Dataset Version
   const handleCreateVersion = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newVersionFile) {
-      setToast({ type: 'error', message: 'Please select a CSV file.' });
+    if (!dataset || !newVersionFile) {
+      setToast({ type: 'error', message: 'Please select a CSV file to upload.' });
       return;
     }
 
@@ -153,694 +188,656 @@ export const DatasetDetailPage: React.FC<DatasetDetailPageProps> = ({ datasetId,
       if (newCommitMessage.trim()) formData.append('commit_message', newCommitMessage.trim());
       if (selectedVersionId) formData.append('parent_version_id', selectedVersionId);
 
-      const res = await api.createDatasetVersion(datasetId, formData);
-      setToast({ type: 'success', message: `Version ${res.version.version_label} committed successfully!` });
+      const res = await api.createDatasetVersion(dataset.id, formData);
+      setToast({
+        type: 'success',
+        message: `Version ${res.version.version_label} committed and verified!`,
+      });
       setIsVersionModalOpen(false);
       setNewVersionFile(null);
       setNewVersionLabel('');
       setNewCommitMessage('');
-      await fetchDatasetDetails();
+      await loadSpecificDataset(dataset.id);
     } catch (err: any) {
-      if (err.code === 'DUPLICATE_FILE') {
-        setToast({ type: 'error', message: 'Duplicate file error: Identical SHA-256 hash already exists in this dataset.' });
-      } else {
-        setToast({ type: 'error', message: err.message || 'Error uploading file' });
-      }
+      setToast({
+        type: 'error',
+        message:
+          err.code === 'DUPLICATE_FILE'
+            ? 'Rejected: Exact duplicate SHA-256 checksum already exists in this dataset.'
+            : err.message || 'Failed to commit version',
+      });
     } finally {
       setSubmittingVersion(false);
     }
   };
 
-  if (loading) return <LoadingSpinner message="Retrieving dataset, version lineage, and schema metadata..." />;
-  if (error || !dataset) return <ErrorState title="Dataset Load Failed" message={error || 'Dataset not found'} onRetry={fetchDatasetDetails} />;
+  if (loading) {
+    return (
+      <LoadingSpinner message="Loading dataset metadata, version history, and column statistics..." />
+    );
+  }
 
-  const formatBytes = (bytes: number | string) => {
-    const b = typeof bytes === 'string' ? parseInt(bytes, 10) : bytes;
-    if (isNaN(b) || b === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(b) / Math.log(k));
-    return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  if (error) {
+    return (
+      <ErrorState
+        title="Dataset Inspection Failed"
+        message={error}
+        onRetry={fetchDatasetDetails}
+      />
+    );
+  }
 
-  const selectedVersionObj = versions.find(v => v.id === selectedVersionId);
+  if (!dataset) {
+    return (
+      <EmptyState
+        title="No Dataset Selected"
+        description="Select a dataset from the catalog or register a new CSV dataset."
+        actionText="Browse Dataset Catalog"
+        onAction={() => onNavigate('datasets')}
+        icon={<Database size={28} />}
+      />
+    );
+  }
+
+  const activeVersion = versions.find((v) => v.id === selectedVersionId) || versions[0];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
-      {/* Top Banner */}
-      <div style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--radius-lg)',
-        padding: '24px 32px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: '20px'
-      }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-            <div style={{
-              padding: '8px',
-              borderRadius: 'var(--radius-sm)',
-              backgroundColor: 'rgba(14, 165, 233, 0.1)',
-              color: 'var(--accent-cyan)'
-            }}>
-              <Database size={20} />
-            </div>
-            <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>
-              {dataset.name}
-            </h2>
-            <span style={{
-              fontSize: '12px',
-              fontFamily: 'JetBrains Mono, monospace',
-              padding: '2px 8px',
-              borderRadius: 'var(--radius-sm)',
-              backgroundColor: 'var(--bg-card)',
-              color: 'var(--accent-cyan)',
-              border: '1px solid var(--border)'
-            }}>
-              {dataset.type}
-            </span>
-          </div>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', maxWidth: '720px' }}>
-            {dataset.description || 'No description provided.'}
-          </p>
-        </div>
-
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <button
-            onClick={() => onNavigate('lineage', { datasetId })}
-            style={{
-              backgroundColor: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              color: 'var(--accent-cyan)',
-              padding: '10px 16px',
-              borderRadius: 'var(--radius-md)',
-              fontSize: '13px',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            <GitFork size={16} />
-            Explore Lineage Graph
-          </button>
-          <button
-            onClick={() => setIsVersionModalOpen(true)}
-            style={{
-              backgroundColor: 'var(--accent-cyan)',
-              color: '#FFFFFF',
-              padding: '10px 18px',
-              borderRadius: 'var(--radius-md)',
-              fontSize: '13px',
-              fontWeight: 600,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            <Plus size={16} />
-            Commit New Version
-          </button>
-        </div>
-      </div>
-
-      {/* Navigation Sub-Tabs */}
-      <div style={{
-        display: 'flex',
-        gap: '4px',
-        borderBottom: '1px solid var(--border)',
-        paddingBottom: '2px'
-      }}>
-        {[
-          { id: 'overview', label: 'Version Overview', icon: Database },
-          { id: 'versions', label: `Version History (${versions.length})`, icon: GitBranch },
-          { id: 'schema', label: `Schema Columns (${columns.length})`, icon: Table },
-          { id: 'drift', label: 'Drift & Similarity Analysis', icon: TrendingDown },
-          { id: 'lineage', label: 'Ancestry Lineage Tree', icon: GitFork },
-        ].map(tab => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <PageHeader
+        title={dataset.name}
+        badge={dataset.type || 'TABULAR'}
+        subtitle={dataset.description || 'No description provided for this dataset.'}
+        actions={
+          <>
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '10px 16px',
-                borderBottom: isActive ? '2px solid var(--accent-cyan)' : '2px solid transparent',
-                color: isActive ? 'var(--accent-cyan)' : 'var(--text-secondary)',
-                fontWeight: isActive ? 600 : 500,
-                fontSize: '14px',
-                transition: 'all 0.15s ease'
-              }}
+              type="button"
+              onClick={() => onNavigate('datasets')}
+              className="df-btn df-btn-secondary"
             >
-              <Icon size={16} />
-              {tab.label}
+              <ArrowLeft size={14} /> Catalog
             </button>
-          );
-        })}
-      </div>
-
-      {/* Tab 1: Overview */}
-      {activeTab === 'overview' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '24px' }}>
-          {/* Active Version Card */}
-          <div style={{
-            backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '24px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px'
-          }}>
-            <h3 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <GitBranch size={18} color="var(--accent-cyan)" />
-              Active Version: {selectedVersionObj?.version_label || 'None'}
-            </h3>
-
-            {selectedVersionObj ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Row Count</span>
-                  <span style={{ color: 'var(--text-primary)', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                    {selectedVersionObj.row_count} rows
-                  </span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Column Count</span>
-                  <span style={{ color: 'var(--text-primary)', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                    {selectedVersionObj.column_count} columns
-                  </span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>File Size</span>
-                  <span style={{ color: 'var(--text-primary)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {formatBytes(selectedVersionObj.file_size_bytes)}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>SHA-256 Checksum</span>
-                  <span style={{ color: 'var(--accent-cyan)', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {selectedVersionObj.checksum_sha256}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Commit Message</span>
-                  <span style={{ color: 'var(--text-secondary)' }}>
-                    {selectedVersionObj.commit_message || 'No commit message'}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Committed On</span>
-                  <span style={{ color: 'var(--text-secondary)' }}>
-                    {new Date(selectedVersionObj.created_at).toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div style={{ color: 'var(--text-muted)' }}>No version selected.</div>
-            )}
-          </div>
-
-          {/* Quick Version Selector */}
-          <div style={{
-            backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '24px'
-          }}>
-            <h3 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '16px' }}>
-              Switch Inspected Version
-            </h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {versions.map(v => (
-                <div
-                  key={v.id}
-                  onClick={() => setSelectedVersionId(v.id)}
-                  style={{
-                    padding: '12px 16px',
-                    borderRadius: 'var(--radius-sm)',
-                    backgroundColor: selectedVersionId === v.id ? 'var(--bg-card)' : 'transparent',
-                    border: selectedVersionId === v.id ? '1px solid var(--accent-cyan)' : '1px solid var(--border)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}
-                >
-                  <div>
-                    <span style={{
-                      fontWeight: 600,
-                      color: selectedVersionId === v.id ? 'var(--accent-cyan)' : 'var(--text-primary)',
-                      fontFamily: 'JetBrains Mono, monospace',
-                      fontSize: '13px'
-                    }}>
-                      {v.version_label}
-                    </span>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '12px', marginLeft: '8px' }}>
-                      ({v.row_count} rows)
-                    </span>
-                  </div>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                    {new Date(v.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 2: Version History */}
-      {activeTab === 'versions' && (
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden'
-        }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-            <thead>
-              <tr style={{ backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-                <th style={{ padding: '14px 20px' }}>Version</th>
-                <th style={{ padding: '14px 16px' }}>Rows</th>
-                <th style={{ padding: '14px 16px' }}>Cols</th>
-                <th style={{ padding: '14px 16px' }}>Size</th>
-                <th style={{ padding: '14px 16px' }}>SHA-256 Checksum</th>
-                <th style={{ padding: '14px 16px' }}>Commit Message</th>
-                <th style={{ padding: '14px 20px' }}>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {versions.map(v => (
-                <tr
-                  key={v.id}
-                  style={{
-                    borderBottom: '1px solid rgba(36, 48, 68, 0.4)',
-                    backgroundColor: selectedVersionId === v.id ? 'rgba(14, 165, 233, 0.05)' : 'transparent'
-                  }}
-                >
-                  <td style={{ padding: '14px 20px', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, color: 'var(--accent-cyan)' }}>
-                    {v.version_label}
-                  </td>
-                  <td style={{ padding: '14px 16px', color: 'var(--text-primary)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {v.row_count}
-                  </td>
-                  <td style={{ padding: '14px 16px', color: 'var(--text-secondary)' }}>
-                    {v.column_count}
-                  </td>
-                  <td style={{ padding: '14px 16px', color: 'var(--text-secondary)' }}>
-                    {formatBytes(v.file_size_bytes)}
-                  </td>
-                  <td style={{ padding: '14px 16px', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text-muted)' }}>
-                    {v.checksum_sha256.slice(0, 16)}...
-                  </td>
-                  <td style={{ padding: '14px 16px', color: 'var(--text-secondary)' }}>
-                    {v.commit_message || '—'}
-                  </td>
-                  <td style={{ padding: '14px 20px', color: 'var(--text-muted)', fontSize: '12px' }}>
-                    {new Date(v.created_at).toLocaleDateString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Tab 3: Schema Columns */}
-      {activeTab === 'schema' && (
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden'
-        }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-            <thead>
-              <tr style={{ backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-                <th style={{ padding: '14px 20px' }}>Column Order</th>
-                <th style={{ padding: '14px 20px' }}>Column Name</th>
-                <th style={{ padding: '14px 20px' }}>Data Type</th>
-                <th style={{ padding: '14px 20px' }}>Nullable</th>
-                <th style={{ padding: '14px 20px' }}>Distinct Values</th>
-                <th style={{ padding: '14px 20px' }}>Null Count</th>
-              </tr>
-            </thead>
-            <tbody>
-              {columns.map(col => (
-                <tr key={col.id} style={{ borderBottom: '1px solid rgba(36, 48, 68, 0.4)' }}>
-                  <td style={{ padding: '14px 20px', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    #{col.ordinal_position}
-                  </td>
-                  <td style={{ padding: '14px 20px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                    {col.column_name}
-                  </td>
-                  <td style={{ padding: '14px 20px' }}>
-                    <span style={{
-                      fontFamily: 'JetBrains Mono, monospace',
-                      fontSize: '11px',
-                      color: 'var(--accent-cyan)',
-                      backgroundColor: 'rgba(14, 165, 233, 0.1)',
-                      padding: '3px 8px',
-                      borderRadius: '4px'
-                    }}>
-                      {col.data_type}
-                    </span>
-                  </td>
-                  <td style={{ padding: '14px 20px', color: 'var(--text-secondary)' }}>
-                    {col.is_nullable ? 'YES' : 'NO'}
-                  </td>
-                  <td style={{ padding: '14px 20px', color: 'var(--text-secondary)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {col.distinct_count ?? '—'}
-                  </td>
-                  <td style={{ padding: '14px 20px', color: 'var(--text-secondary)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {col.null_count ?? '0'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Tab 4: Drift & Similarity Analysis */}
-      {activeTab === 'drift' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          {/* Version Comparison Selector Bar */}
-          <div style={{
-            backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '20px 24px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '16px',
-            flexWrap: 'wrap'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>Source:</span>
-              <select
-                value={selectedVersionId}
-                onChange={(e) => setSelectedVersionId(e.target.value)}
-                style={{
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--text-primary)',
-                  padding: '8px 12px',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: '13px'
-                }}
-              >
-                {versions.map(v => (
-                  <option key={v.id} value={v.id}>{v.version_label} ({v.row_count} rows)</option>
-                ))}
-              </select>
-            </div>
-
-            <ArrowRight size={16} color="var(--text-muted)" />
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>Target:</span>
-              <select
-                value={compareVersionId}
-                onChange={(e) => setCompareVersionId(e.target.value)}
-                style={{
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--text-primary)',
-                  padding: '8px 12px',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: '13px'
-                }}
-              >
-                {versions.map(v => (
-                  <option key={v.id} value={v.id}>{v.version_label} ({v.row_count} rows)</option>
-                ))}
-              </select>
-            </div>
-
             <button
-              onClick={handleRunAnalysis}
-              disabled={analyzingDrift}
-              style={{
-                backgroundColor: 'var(--accent-cyan)',
-                color: '#FFFFFF',
-                padding: '8px 18px',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '13px',
-                fontWeight: 600,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                marginLeft: 'auto'
-              }}
+              type="button"
+              onClick={() => setIsEditing((prev) => !prev)}
+              className="df-btn df-btn-secondary"
             >
-              <Sparkles size={16} />
-              {analyzingDrift ? 'Executing PostgreSQL Analysis...' : 'Run Similarity & Drift'}
+              <Edit3 size={14} /> {isEditing ? 'Cancel Edit' : 'Edit Metadata'}
             </button>
-          </div>
+            <button
+              type="button"
+              onClick={() =>
+                onNavigate('versions', {
+                  datasetId: dataset.id,
+                  versionId: selectedVersionId,
+                })
+              }
+              className="df-btn df-btn-secondary"
+            >
+              <GitCompare size={14} /> Version Diff
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('lineage', { datasetId: dataset.id })}
+              className="df-btn df-btn-secondary"
+            >
+              <GitFork size={14} /> Lineage DAG
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsVersionModalOpen(true)}
+              className="df-btn df-btn-lime"
+            >
+              <Plus size={15} /> Commit New Version
+            </button>
+          </>
+        }
+      />
 
-          {/* Results Display */}
-          {(similarityResult || driftResult) && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
-              {/* Similarity Card */}
-              {similarityResult && (
-                <div style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: '24px'
-                }}>
-                  <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    Jaccard Schema Similarity
-                  </h4>
-                  <div style={{
-                    fontSize: '36px',
-                    fontWeight: 700,
-                    color: 'var(--accent-emerald)',
-                    fontFamily: 'JetBrains Mono, monospace',
-                    marginBottom: '8px'
-                  }}>
-                    {(Number(similarityResult.similarity_score) * 100).toFixed(1)}%
-                  </div>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-                    Method: <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{similarityResult.comparison_method}</span>
-                  </p>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: '4px' }}>
-                    Overlap: {similarityResult.column_overlap_count ?? '—'} columns
-                  </p>
-                </div>
-              )}
-
-              {/* Drift Card */}
-              {driftResult && (
-                <div style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: '24px'
-                }}>
-                  <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    Feature Distribution Drift
-                  </h4>
-                  <div style={{
-                    fontSize: '36px',
-                    fontWeight: 700,
-                    color: Number(driftResult.drift_score) > 0.3 ? 'var(--accent-rose)' : 'var(--accent-emerald)',
-                    fontFamily: 'JetBrains Mono, monospace',
-                    marginBottom: '8px'
-                  }}>
-                    {(Number(driftResult.drift_score) * 100).toFixed(1)}%
-                  </div>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-                    Method: <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{driftResult.comparison_method}</span>
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Tab 5: Ancestry Tree */}
-      {activeTab === 'lineage' && (
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          padding: '24px'
-        }}>
-          <h4 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '16px' }}>
-            PostgreSQL Recursive Version Lineage
-          </h4>
-          {lineageTree ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div style={{
-                padding: '16px',
-                borderRadius: 'var(--radius-md)',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px'
-              }}>
-                <GitBranch size={20} color="var(--accent-cyan)" />
-                <div>
-                  <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                    Inspected Version: {selectedVersionObj?.version_label}
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {selectedVersionObj?.checksum_sha256}
-                  </div>
-                </div>
-              </div>
-
+      {/* Inline Metadata Edit Panel */}
+      {isEditing && (
+        <Panel title="EDIT DATASET METADATA">
+          <form
+            onSubmit={handleSaveDatasetEdit}
+            style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+          >
+            <div className="df-subgrid-2">
               <div>
-                <h5 style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                  Ancestry Path ({lineageTree.ancestry.length} ancestor versions):
-                </h5>
-                {lineageTree.ancestry.length > 0 ? (
-                  lineageTree.ancestry.map((anc, idx) => (
-                    <div key={idx} style={{
-                      padding: '10px 14px',
-                      borderRadius: 'var(--radius-sm)',
-                      backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                      borderLeft: '2px solid var(--accent-cyan)',
-                      marginBottom: '8px',
-                      fontSize: '13px'
-                    }}>
-                      <span style={{ fontWeight: 600, color: 'var(--accent-cyan)', fontFamily: 'JetBrains Mono, monospace' }}>
-                        {anc.version_label}
-                      </span>
-                      <span style={{ color: 'var(--text-secondary)', marginLeft: '12px' }}>
-                        Depth: {anc.depth} &bull; Checksum: {anc.checksum_sha256.slice(0, 12)}...
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>This is the root version (no ancestors).</div>
-                )}
+                <label className="df-label">Dataset Name *</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="df-input"
+                  required
+                />
+              </div>
+              <div>
+                <label className="df-label">Status</label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="df-select"
+                >
+                  <option value="Active">Active</option>
+                  <option value="Validated">Validated</option>
+                  <option value="Deprecated">Deprecated</option>
+                  <option value="Archived">Archived</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="df-label">Description</label>
+              <textarea
+                rows={2}
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                className="df-textarea"
+              />
+            </div>
+            <div>
+              <label className="df-label">Tags (comma-separated)</label>
+              <input
+                type="text"
+                value={editTags}
+                onChange={(e) => setEditTags(e.target.value)}
+                className="df-input"
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => setIsEditing(false)}
+                className="df-btn df-btn-secondary"
+              >
+                <X size={14} /> Cancel
+              </button>
+              <button type="submit" disabled={savingEdit} className="df-btn df-btn-lime">
+                <Check size={14} /> {savingEdit ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </form>
+        </Panel>
+      )}
+
+      {/* Top Asymmetric Summary Row */}
+      <div className="df-dashboard-grid">
+        {/* Left: Active Version Cryptographic & Structural Identity */}
+        <Panel
+          title={
+            activeVersion
+              ? `INSPECTED VERSION: ${activeVersion.version_label}`
+              : 'NO VERSIONS COMMITTED'
+          }
+          subtitle="Immutable content-addressed version record and SHA-256 fingerprint"
+          rightSlot={<StatusBadge status={dataset.status || 'Active'} />}
+        >
+          {activeVersion ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+                <DeltaStat
+                  direction="up"
+                  accent="lime"
+                  value={Number(activeVersion.row_count || 0).toLocaleString()}
+                  label="Row Count"
+                  sublabel={activeVersion.file_name}
+                />
+                <DeltaStat
+                  direction="up"
+                  accent="white"
+                  value={activeVersion.column_count}
+                  label="Schema Columns"
+                  sublabel={`#${activeVersion.version_number} in chain`}
+                />
+                <DeltaStat
+                  direction="down"
+                  accent="amber"
+                  value={formatBytes(activeVersion.file_size_bytes)}
+                  label="Version Size"
+                  sublabel={formatBytes(dataset.total_storage_bytes) + ' total'}
+                />
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                  gap: '10px',
+                  paddingTop: '14px',
+                  borderTop: '1px solid var(--border-subtle)',
+                  fontSize: '12.5px',
+                }}
+              >
+                <div>
+                  <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                    SHA-256 Checksum
+                  </span>
+                  <HashBadge hash={activeVersion.checksum_sha256} chars={20} />
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                    Schema Fingerprint
+                  </span>
+                  <HashBadge hash={activeVersion.schema_fingerprint} chars={16} />
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                    Associated Project
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('projects', { projectId: dataset.project_id })}
+                    style={{
+                      color: 'var(--accent-lime)',
+                      fontWeight: 700,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                    }}
+                  >
+                    {dataset.project_name || 'Inspect Project'} <ArrowUpRight size={13} />
+                  </button>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                    Committed At
+                  </span>
+                  <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>
+                    {formatDateTime(activeVersion.created_at)}
+                  </span>
+                </div>
+              </div>
+
+              {activeVersion.commit_message && (
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 'var(--radius-sm)',
+                    backgroundColor: 'var(--bg-card)',
+                    border: '1px solid var(--border-subtle)',
+                    fontSize: '13px',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <strong style={{ color: 'var(--text-primary)' }}>Commit Note:</strong>{' '}
+                  {activeVersion.commit_message}
+                </div>
+              )}
+
+              {/* Quick Analysis Shortcuts for this Version */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onNavigate('similarity', {
+                      datasetId: dataset.id,
+                      baseVersionId: activeVersion.id,
+                    })
+                  }
+                  className="df-btn df-btn-secondary"
+                  style={{ fontSize: '12px', padding: '7px 14px' }}
+                >
+                  <Sparkles size={13} color="var(--accent-lime)" /> Run Similarity Check
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onNavigate('drift', {
+                      datasetId: dataset.id,
+                      baseVersionId: activeVersion.id,
+                    })
+                  }
+                  className="df-btn df-btn-secondary"
+                  style={{ fontSize: '12px', padding: '7px 14px' }}
+                >
+                  <Activity size={13} color="var(--accent-amber)" /> Run Statistical Drift
+                </button>
               </div>
             </div>
           ) : (
-            <div style={{ color: 'var(--text-muted)' }}>Loading lineage ancestry...</div>
+            <EmptyState
+              title="No Versions Committed"
+              description="Upload a CSV file to create v1.0.0 of this dataset."
+              actionText="Commit Version v1.0.0"
+              onAction={() => setIsVersionModalOpen(true)}
+            />
           )}
-        </div>
-      )}
+        </Panel>
 
-      {/* Modal: Commit New Version */}
+        {/* Right: Version History Selector & Connected Models / Experiments */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
+          <Panel
+            title={`VERSION TIMELINE (${versions.length})`}
+            subtitle="Select any version checkpoint to inspect its schema and downstream models"
+            rightSlot={
+              <button
+                type="button"
+                onClick={() =>
+                  onNavigate('versions', {
+                    datasetId: dataset.id,
+                    versionId: selectedVersionId,
+                  })
+                }
+                className="df-btn-ghost"
+                style={{ fontSize: '12px', borderRadius: '999px' }}
+              >
+                Compare Diff <ArrowUpRight size={13} />
+              </button>
+            }
+          >
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                maxHeight: '220px',
+                overflowY: 'auto',
+              }}
+            >
+              {versions.map((v) => {
+                const isSelected = v.id === selectedVersionId;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => handleSelectVersion(v.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '11px 14px',
+                      borderRadius: 'var(--radius-pill)',
+                      backgroundColor: isSelected
+                        ? 'var(--accent-lime)'
+                        : 'var(--bg-card)',
+                      color: isSelected
+                        ? 'var(--text-on-accent)'
+                        : 'var(--text-primary)',
+                      border: `1px solid ${
+                        isSelected ? 'var(--accent-lime)' : 'var(--border-subtle)'
+                      }`,
+                      textAlign: 'left',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <GitBranch size={15} />
+                      <span className="font-mono" style={{ fontWeight: 700, fontSize: '13px' }}>
+                        {v.version_label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '12px',
+                          opacity: isSelected ? 0.85 : 0.65,
+                        }}
+                      >
+                        {Number(v.row_count).toLocaleString()} rows &bull; {v.column_count} cols
+                      </span>
+                    </div>
+                    <span
+                      className="font-mono"
+                      style={{ fontSize: '11px', opacity: isSelected ? 0.9 : 0.6 }}
+                    >
+                      {new Date(v.created_at).toLocaleDateString()}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </Panel>
+
+          {/* Connected Models & Experiments for Selected Version */}
+          <Panel
+            title="CONNECTED MODELS & EXPERIMENTS"
+            subtitle="Downstream ML artifacts trained or evaluated on the selected version"
+          >
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+              <div>
+                <div
+                  className="font-display"
+                  style={{
+                    fontSize: '14px',
+                    color: 'var(--accent-lime)',
+                    marginBottom: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <Brain size={14} /> TRAINED MODELS (
+                  {versionLineage?.trained_models?.length || 0})
+                </div>
+                {versionLineage?.trained_models &&
+                versionLineage.trained_models.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {versionLineage.trained_models.map((tm) => (
+                      <button
+                        key={tm.id}
+                        type="button"
+                        onClick={() => onNavigate('models')}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          backgroundColor: 'var(--bg-card)',
+                          border: '1px solid var(--border-subtle)',
+                          textAlign: 'left',
+                          fontSize: '12px',
+                        }}
+                      >
+                        <div style={{ fontWeight: 700 }}>{tm.model_name}</div>
+                        <div className="font-mono" style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+                          {tm.version} &bull; {tm.algorithm}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    No model versions linked to this dataset version yet.
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div
+                  className="font-display"
+                  style={{
+                    fontSize: '14px',
+                    color: 'var(--accent-amber)',
+                    marginBottom: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <FlaskConical size={14} /> EXPERIMENTS (
+                  {versionLineage?.experiments?.length || 0})
+                </div>
+                {versionLineage?.experiments && versionLineage.experiments.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {versionLineage.experiments.map((exp) => (
+                      <button
+                        key={exp.id}
+                        type="button"
+                        onClick={() =>
+                          onNavigate('experiments', { experimentId: exp.id })
+                        }
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          backgroundColor: 'var(--bg-card)',
+                          border: '1px solid var(--border-subtle)',
+                          textAlign: 'left',
+                          fontSize: '12px',
+                        }}
+                      >
+                        <div style={{ fontWeight: 700 }}>{exp.name}</div>
+                        <div className="font-mono" style={{ color: 'var(--accent-lime)', fontSize: '11px' }}>
+                          {exp.status}
+                          {exp.accuracy !== undefined && exp.accuracy !== null
+                            ? ` • ${(Number(exp.accuracy) * 100).toFixed(1)}% acc`
+                            : ''}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    No experiments recorded for this version yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </Panel>
+        </div>
+      </div>
+
+      {/* Bottom: Extracted Column Schema Profiler Table */}
+      <Panel
+        title={`EXTRACTED RELATIONAL SCHEMA (${columns.length} COLUMNS)`}
+        subtitle="Column types, nullability, cardinality, and sample values extracted at commit time"
+        flush
+      >
+        {columns.length === 0 ? (
+          <div style={{ padding: '28px', color: 'var(--text-muted)', fontSize: '13px' }}>
+            No column schema records found for this version.
+          </div>
+        ) : (
+          <div className="df-table-wrapper">
+            <table className="df-table">
+              <thead>
+                <tr>
+                  <th>Ordinal</th>
+                  <th>Column Name</th>
+                  <th>Data Type</th>
+                  <th>Nullable</th>
+                  <th>Distinct Count</th>
+                  <th>Null Count</th>
+                  <th>Sample Values</th>
+                </tr>
+              </thead>
+              <tbody>
+                {columns.map((col) => (
+                  <tr key={col.id}>
+                    <td className="font-mono" style={{ color: 'var(--text-muted)' }}>
+                      #{col.ordinal_position}
+                    </td>
+                    <td className="font-mono" style={{ fontWeight: 700 }}>
+                      {col.column_name}
+                    </td>
+                    <td>
+                      <span
+                        className="font-mono"
+                        style={{
+                          padding: '3px 9px',
+                          borderRadius: 'var(--radius-pill)',
+                          backgroundColor:
+                            col.data_type === 'NUMERIC' || col.data_type === 'INTEGER'
+                              ? 'var(--accent-lime-dim)'
+                              : 'var(--bg-card)',
+                          color:
+                            col.data_type === 'NUMERIC' || col.data_type === 'INTEGER'
+                              ? 'var(--accent-lime)'
+                              : 'var(--text-primary)',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        {col.data_type}
+                      </span>
+                    </td>
+                    <td className="font-mono" style={{ fontSize: '12px' }}>
+                      {col.is_nullable ? (
+                        <span style={{ color: 'var(--accent-amber)' }}>NULLABLE</span>
+                      ) : (
+                        <span style={{ color: 'var(--text-secondary)' }}>NOT NULL</span>
+                      )}
+                    </td>
+                    <td className="font-mono">{col.distinct_count ?? '—'}</td>
+                    <td className="font-mono">{col.null_count ?? 0}</td>
+                    <td
+                      className="font-mono"
+                      style={{
+                        fontSize: '11.5px',
+                        color: 'var(--text-secondary)',
+                        maxWidth: '300px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {Array.isArray(col.sample_values) && col.sample_values.length > 0
+                        ? col.sample_values.slice(0, 4).map(String).join(', ')
+                        : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {/* Modal: Commit New Dataset Version */}
       <Modal
         isOpen={isVersionModalOpen}
         onClose={() => setIsVersionModalOpen(false)}
-        title="Commit New Dataset Version"
+        title="COMMIT NEW DATASET VERSION"
+        subtitle={`Upload a CSV file to create a new version derived from ${
+          activeVersion?.version_label || 'root'
+        }`}
       >
-        <form onSubmit={handleCreateVersion} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <form
+          onSubmit={handleCreateVersion}
+          style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}
+        >
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              CSV File <span style={{ color: 'var(--accent-rose)' }}>*</span>
-            </label>
+            <label className="df-label">CSV File *</label>
             <input
               type="file"
               accept=".csv,text/csv"
               onChange={(e) => setNewVersionFile(e.target.files?.[0] || null)}
               required
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '8px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '13px'
-              }}
+              className="df-input"
             />
           </div>
-
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              Version Label
-            </label>
+            <label className="df-label">Version Label</label>
             <input
               type="text"
-              placeholder={`e.g. v1.${versions.length}.0`}
+              placeholder={`e.g. v${versions.length + 1}.0.0`}
               value={newVersionLabel}
               onChange={(e) => setNewVersionLabel(e.target.value)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '8px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px',
-                fontFamily: 'JetBrains Mono, monospace'
-              }}
+              className="df-input font-mono"
             />
           </div>
-
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              Commit Message
-            </label>
+            <label className="df-label">Commit Message</label>
             <textarea
               rows={2}
-              placeholder="What changes or transformations were applied?"
+              placeholder="Document what changed in this dataset version..."
               value={newCommitMessage}
               onChange={(e) => setNewCommitMessage(e.target.value)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '8px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px'
-              }}
+              className="df-textarea"
             />
           </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
             <button
               type="button"
               onClick={() => setIsVersionModalOpen(false)}
-              style={{
-                padding: '8px 14px',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--border)',
-                color: 'var(--text-secondary)',
-                fontSize: '13px'
-              }}
+              className="df-btn df-btn-secondary"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submittingVersion}
-              style={{
-                backgroundColor: 'var(--accent-cyan)',
-                color: '#FFFFFF',
-                padding: '8px 16px',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '13px',
-                fontWeight: 600,
-                opacity: submittingVersion ? 0.7 : 1
-              }}
+              className="df-btn df-btn-lime"
             >
-              {submittingVersion ? 'Uploading & Committing...' : 'Commit Version'}
+              {submittingVersion ? 'Uploading & Hashing...' : 'Commit Version'}
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Toast Alert */}
       {toast && (
         <ToastNotification
           type={toast.type}
@@ -851,4 +848,3 @@ export const DatasetDetailPage: React.FC<DatasetDetailPageProps> = ({ datasetId,
     </div>
   );
 };
-

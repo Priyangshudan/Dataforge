@@ -1,257 +1,572 @@
-import React, { useEffect, useState } from 'react';
-import {
-  TrendingUp,
-  PieChart as PieIcon,
-  Sparkles
-} from 'lucide-react';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  Legend
-} from 'recharts';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
-import type { AnalyticsSummary, DatasetAnalyticsResponse, ExperimentAnalyticsResponse } from '../types';
-import { LoadingSpinner, ErrorState } from '../components/Common';
-import type { NavigationTab } from '../layouts/AppLayout';
+import type {
+  AnalyticsSummary,
+  ProjectAnalyticsItem,
+  Dataset,
+  ExperimentAnalyticsResponse,
+  NavigationTab,
+} from '../types';
+import {
+  PageHeader,
+  Panel,
+  LoadingSpinner,
+  ErrorState,
+  EmptyState,
+  StatusBadge,
+  RingLegend,
+  DeltaStat,
+  formatBytes,
+} from '../components/Common';
+import {
+  BarChart3,
+  Award,
+  Cpu,
+} from 'lucide-react';
 
 interface AnalyticsPageProps {
-  onNavigate: (tab: NavigationTab, params?: any) => void;
+  onNavigate: (tab: NavigationTab, params?: Record<string, string>) => void;
 }
 
-export const AnalyticsPage: React.FC<AnalyticsPageProps> = () => {
+export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ onNavigate }) => {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
-  const [datasetAnalytics, setDatasetAnalytics] = useState<DatasetAnalyticsResponse | null>(null);
-  const [experimentAnalytics, setExperimentAnalytics] = useState<ExperimentAnalyticsResponse | null>(null);
+  const [projectStats, setProjectStats] = useState<ProjectAnalyticsItem[]>([]);
+  const [topDatasets, setTopDatasets] = useState<Dataset[]>([]);
+  const [statusBreakdown, setStatusBreakdown] = useState<
+    ExperimentAnalyticsResponse['status_distribution']
+  >([]);
+  const [bestExperiments, setBestExperiments] = useState<
+    ExperimentAnalyticsResponse['best_experiments']
+  >([]);
+  const [highPerfModels, setHighPerfModels] = useState<
+    ExperimentAnalyticsResponse['high_performing_models']
+  >([]);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchAnalytics = async () => {
+  const loadAnalytics = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [sumRes, dsRes, expRes] = await Promise.all([
         api.getAnalyticsSummary(),
         api.getDatasetAnalytics(),
-        api.getExperimentAnalytics()
+        api.getExperimentAnalytics(),
       ]);
 
-      setSummary(sumRes);
-      setDatasetAnalytics(dsRes);
-      setExperimentAnalytics(expRes);
+      setSummary(sumRes || null);
+      setProjectStats(dsRes?.projects || []);
+      setTopDatasets(dsRes?.top_datasets || []);
+      setStatusBreakdown(expRes?.status_distribution || []);
+      setBestExperiments(expRes?.best_experiments || []);
+      setHighPerfModels(expRes?.high_performing_models || []);
     } catch (err: any) {
-      setError(err.message || 'Error communicating with DataForge backend');
+      setError(err.message || 'Failed to load database analytics views');
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchAnalytics();
   }, []);
 
-  if (loading) return <LoadingSpinner message="Querying PostgreSQL aggregation views and statistics..." />;
-  if (error || !summary) return <ErrorState title="Analytics Error" message={error || 'Failed to load'} onRetry={fetchAnalytics} />;
+  useEffect(() => {
+    loadAnalytics();
+  }, [loadAnalytics]);
 
-  const formatBytes = (bytes: number | string) => {
-    const b = typeof bytes === 'string' ? parseInt(bytes, 10) : bytes;
-    if (isNaN(b) || b === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(b) / Math.log(k));
-    return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  if (loading && !summary) {
+    return (
+      <LoadingSpinner message="Querying PostgreSQL analytical views & CTE aggregations..." />
+    );
+  }
 
-  const STATUS_COLORS: { [key: string]: string } = {
-    COMPLETED: '#10B981',
-    RUNNING: '#0EA5E9',
-    FAILED: '#F43F5E',
-  };
+  if (error && !summary) {
+    return <ErrorState message={error} onRetry={loadAnalytics} />;
+  }
 
-  const projects = datasetAnalytics?.projects || [];
-  const statusDistribution = experimentAnalytics?.status_distribution || [];
-  const bestExperiments = experimentAnalytics?.best_experiments || [];
+  const maxProjectStorage = Math.max(
+    1,
+    ...projectStats.map((p) => Number(p.total_storage_bytes || 0))
+  );
+  const maxDatasetRows = Math.max(
+    1,
+    ...topDatasets.map((d) => Number(d.latest_row_count || 0))
+  );
+
+  const bestAcc = bestExperiments.length > 0 ? bestExperiments[0].accuracy : null;
+  const bestF1 = bestExperiments.length > 0 ? bestExperiments[0].f1_score : null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-      {/* Header */}
-      <div>
-        <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>
-          DBMS Analytics & Aggregate Views
-        </h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-          Data distribution metrics generated from PostgreSQL materialized views, GROUP BY queries, and SQL window aggregations.
-        </p>
+    <div>
+      <PageHeader
+        eyebrow="POSTGRESQL ANALYTICAL VIEWS & CTE AGGREGATIONS"
+        title="LABORATORY ANALYTICS"
+        subtitle="Cross-project storage telemetry, dataset version density, experiment status distributions, and high-performing model leaderboards."
+      />
+
+      {/* Top Strip: 4 High-Contrast Database Telemetry Blocks */}
+      {summary && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+            gap: 16,
+            marginBottom: 16,
+          }}
+        >
+          <Panel>
+            <div className="df-card-label">PEAK MODEL ACCURACY</div>
+            <div
+              className="df-stat-number df-stat-number--lg"
+              style={{ color: 'var(--accent-lime)', marginTop: 8 }}
+            >
+              {bestAcc !== null && bestAcc !== undefined
+                ? `${(Number(bestAcc) * 100).toFixed(2)}%`
+                : '—'}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <DeltaStat
+                delta={
+                  bestF1 ? `Peak F1: ${(Number(bestF1) * 100).toFixed(1)}%` : 'No metrics yet'
+                }
+                positive
+                label="across completed runs"
+              />
+            </div>
+          </Panel>
+
+          <Panel>
+            <div className="df-card-label">TOTAL STORAGE FOOTPRINT</div>
+            <div className="df-stat-number df-stat-number--lg" style={{ marginTop: 8 }}>
+              {formatBytes(Number(summary.total_storage_bytes || 0))}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <DeltaStat
+                delta={`${summary.total_dataset_versions} versions`}
+                positive
+                label={`in ${summary.total_datasets} datasets`}
+              />
+            </div>
+          </Panel>
+
+          <Panel>
+            <div className="df-card-label">EXPERIMENT EXECUTIONS</div>
+            <div
+              className="df-stat-number df-stat-number--lg"
+              style={{ color: 'var(--accent-amber)', marginTop: 8 }}
+            >
+              {summary.total_experiments}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <DeltaStat
+                delta={`${bestExperiments.length} ranked`}
+                positive
+                label="on leaderboard"
+              />
+            </div>
+          </Panel>
+
+          <Panel>
+            <div className="df-card-label">MODEL REGISTRY DENSITY</div>
+            <div className="df-stat-number df-stat-number--lg" style={{ marginTop: 8 }}>
+              {summary.total_models}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <DeltaStat
+                delta={`${summary.total_projects} projects`}
+                positive
+                label="active workspaces"
+              />
+            </div>
+          </Panel>
+        </div>
+      )}
+
+      {/* Middle Row: Project Resource Comparison (7 cols) + Experiment Status Breakdown (5 cols) */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
+          gap: 16,
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ gridColumn: 'span 7' }} className="df-col-full-mobile">
+          <Panel
+            title="PROJECT RESOURCE & VERSION BREAKDOWN"
+            subtitle="Aggregated via PostgreSQL v_project_summary view"
+            rightSlot={
+              <div style={{ display: 'flex', gap: 14 }}>
+                <RingLegend label="STORAGE" color="lime" />
+                <RingLegend label="VERSIONS" color="amber" />
+              </div>
+            }
+          >
+            {projectStats.length === 0 ? (
+              <EmptyState
+                icon={<BarChart3 size={22} />}
+                title="No Project Analytics"
+                description="Create projects and register datasets to populate project summary views."
+              />
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {projectStats.map((proj) => {
+                  const storagePct = Math.max(
+                    8,
+                    Math.round((Number(proj.total_storage_bytes || 0) / maxProjectStorage) * 100)
+                  );
+                  const versionPct = Math.min(100, Number(proj.version_count || 0) * 15);
+
+                  return (
+                    <div
+                      key={proj.project_id}
+                      onClick={() => onNavigate('projects', { projectId: proj.project_id })}
+                      style={{
+                        padding: '12px 16px',
+                        borderRadius: 14,
+                        background: 'var(--bg-elevated)',
+                        border: '1px solid var(--border-subtle)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          marginBottom: 8,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span style={{ fontWeight: 700, color: '#FFF', fontSize: '0.9rem' }}>
+                            {proj.project_name}
+                          </span>
+                          <span className="df-mono" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            {proj.owner_name}
+                          </span>
+                        </div>
+                        <div
+                          className="df-mono"
+                          style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}
+                        >
+                          {proj.dataset_count} DS · {proj.version_count} Ver · {proj.model_count}{' '}
+                          Mod
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1fr 110px',
+                          alignItems: 'center',
+                          gap: 12,
+                        }}
+                      >
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                          <div
+                            style={{
+                              height: 8,
+                              borderRadius: 999,
+                              background: 'rgba(255,255,255,0.06)',
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: `${storagePct}%`,
+                                height: '100%',
+                                borderRadius: 999,
+                                background: 'var(--accent-lime)',
+                              }}
+                            />
+                          </div>
+                          <div
+                            style={{
+                              height: 6,
+                              borderRadius: 999,
+                              background: 'rgba(255,255,255,0.06)',
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: `${versionPct}%`,
+                                height: '100%',
+                                borderRadius: 999,
+                                background: 'var(--accent-amber)',
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="df-mono" style={{ textAlign: 'right', fontSize: '0.72rem' }}>
+                          <div style={{ color: 'var(--accent-lime)', fontWeight: 700 }}>
+                            {formatBytes(Number(proj.total_storage_bytes || 0))}
+                          </div>
+                          <div style={{ color: 'var(--accent-amber)' }}>
+                            {proj.version_count} versions
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
+        </div>
+
+        {/* Right 5 cols: Experiment Status Distribution & Top Datasets */}
+        <div
+          style={{
+            gridColumn: 'span 5',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 16,
+          }}
+          className="df-col-full-mobile"
+        >
+          <Panel
+            title="EXPERIMENT EXECUTION DISTRIBUTION"
+            subtitle="Grouped by run status"
+          >
+            {statusBreakdown.length === 0 ? (
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                No experiment telemetry recorded.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {statusBreakdown.map((item) => (
+                  <div
+                    key={item.status}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '12px 14px',
+                      borderRadius: 12,
+                      background: 'var(--bg-elevated)',
+                      border: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    <StatusBadge status={item.status} />
+                    <span className="df-stat-number df-stat-number--sm">
+                      {item.count} runs
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          <Panel
+            title="DATASET SCALE CAPSULES"
+            subtitle="Ranked by row cardinality and version count"
+          >
+            {topDatasets.length === 0 ? (
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                No datasets available.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {topDatasets.slice(0, 4).map((ds) => {
+                  const pct = Math.max(
+                    12,
+                    Math.round((Number(ds.latest_row_count || 0) / maxDatasetRows) * 100)
+                  );
+                  return (
+                    <div
+                      key={ds.id}
+                      onClick={() => onNavigate('dataset-detail', { datasetId: ds.id })}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          fontSize: '0.8rem',
+                          marginBottom: 4,
+                        }}
+                      >
+                        <span style={{ fontWeight: 600, color: '#FFF' }}>{ds.name}</span>
+                        <span
+                          className="df-mono"
+                          style={{ color: 'var(--text-secondary)', fontSize: '0.72rem' }}
+                        >
+                          {Number(ds.latest_row_count || 0).toLocaleString()} rows ·{' '}
+                          {ds.total_versions || 0}v ·{' '}
+                          {formatBytes(Number(ds.total_storage_bytes || 0))}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          height: 10,
+                          borderRadius: 999,
+                          background: 'var(--bg-elevated)',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${pct}%`,
+                            height: '100%',
+                            borderRadius: 999,
+                            background:
+                              'linear-gradient(90deg, var(--accent-lime), var(--accent-amber))',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
+        </div>
       </div>
 
-      {/* Aggregate Metrics Grid */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-        gap: '20px'
-      }}>
-        <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '20px' }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Total Storage Consumed</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, color: 'var(--accent-rose)', fontFamily: 'JetBrains Mono, monospace' }}>
-            {formatBytes(summary.total_storage_bytes)}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>across all committed versions</div>
+      {/* Bottom Row: High-Performing Models CTE Table + Top Experiments Leaderboard */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
+          gap: 16,
+        }}
+      >
+        <div style={{ gridColumn: 'span 6' }} className="df-col-full-mobile">
+          <Panel
+            title="HIGH-PERFORMING MODEL ARCHITECTURES"
+            subtitle="PostgreSQL CTE & HAVING aggregation across completed evaluation runs"
+            rightSlot={<RingLegend label="SQL CTE" color="lime" />}
+          >
+            {highPerfModels.length === 0 ? (
+              <EmptyState
+                icon={<Cpu size={20} />}
+                title="No Converged Model Benchmarks"
+                description="Complete experiment runs with logged accuracy metrics to populate the model leaderboard."
+              />
+            ) : (
+              <div className="df-table-wrapper">
+                <table className="df-table">
+                  <thead>
+                    <tr>
+                      <th>MODEL</th>
+                      <th>FRAMEWORK</th>
+                      <th>RUNS</th>
+                      <th>AVG ACC</th>
+                      <th>MIN LOSS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {highPerfModels.map((m, idx) => (
+                      <tr
+                        key={`${m.model_name}-${idx}`}
+                        onClick={() => onNavigate('models')}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <td>
+                          <div style={{ fontWeight: 700, color: '#FFF' }}>{m.model_name}</div>
+                        </td>
+                        <td>
+                          <StatusBadge status={m.framework || 'ML'} size="sm" />
+                        </td>
+                        <td className="df-mono">{m.completed_experiments}</td>
+                        <td
+                          className="df-mono"
+                          style={{ color: 'var(--accent-lime)', fontWeight: 700 }}
+                        >
+                          {(Number(m.avg_accuracy || 0) * 100).toFixed(2)}%
+                        </td>
+                        <td className="df-mono" style={{ color: 'var(--accent-amber)' }}>
+                          {m.min_loss !== null && m.min_loss !== undefined
+                            ? Number(m.min_loss).toFixed(4)
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
         </div>
 
-        <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '20px' }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Registered Projects</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, color: 'var(--accent-cyan)' }}>
-            {summary.total_projects}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>isolated workspace environments</div>
-        </div>
-
-        <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '20px' }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Cataloged Datasets</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, color: 'var(--accent-emerald)' }}>
-            {summary.total_datasets}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-            {summary.total_dataset_versions} total immutable versions
-          </div>
-        </div>
-
-        <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '20px' }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>Model Architectures</div>
-          <div style={{ fontSize: '26px', fontWeight: 700, color: 'var(--accent-indigo)' }}>
-            {summary.total_models}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-            {summary.total_experiments} recorded experiments
-          </div>
-        </div>
-      </div>
-
-      {/* Two Column Visual Charts */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '24px' }}>
-        {/* Datasets by Project Bar Chart */}
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          padding: '24px'
-        }}>
-          <h3 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <TrendingUp size={18} color="var(--accent-cyan)" />
-            Dataset Distribution Across Projects
-          </h3>
-          <div style={{ height: '260px', width: '100%' }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={projects} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
-                <XAxis dataKey="project_name" stroke="var(--text-muted)" fontSize={11} interval={0} angle={-15} textAnchor="end" />
-                <YAxis stroke="var(--text-muted)" fontSize={11} allowDecimals={false} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '6px', color: '#FFF' }}
-                  labelStyle={{ color: 'var(--text-secondary)' }}
-                />
-                <Bar dataKey="dataset_count" fill="var(--accent-cyan)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Experiment Status Distribution Pie Chart */}
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          padding: '24px'
-        }}>
-          <h3 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <PieIcon size={18} color="var(--accent-amber)" />
-            Experiment Status Breakdown
-          </h3>
-          <div style={{ height: '260px', width: '100%' }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={statusDistribution.map(i => ({ name: i.status, value: Number(i.count) }))}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={90}
-                  paddingAngle={5}
-                  dataKey="value"
-                >
-                  {statusDistribution.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={STATUS_COLORS[entry.status] || '#64748B'} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '6px', color: '#FFF' }}
-                />
-                <Legend
-                  formatter={(value) => <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>{value}</span>}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      {/* Best Experiments Benchmark View */}
-      <div style={{
-        backgroundColor: 'var(--bg-surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 'var(--radius-lg)',
-        padding: '24px'
-      }}>
-        <h3 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Sparkles size={18} color="var(--accent-emerald)" />
-          Top Model Benchmark Performance (Evaluated from PostgreSQL Metric Joins)
-        </h3>
-
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-            <thead>
-              <tr style={{ backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-                <th style={{ padding: '12px 16px' }}>Model Name</th>
-                <th style={{ padding: '12px 16px' }}>Experiment Run</th>
-                <th style={{ padding: '12px 16px' }}>Dataset</th>
-                <th style={{ padding: '12px 16px', textAlign: 'right' }}>Accuracy</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bestExperiments && bestExperiments.length > 0 ? (
-                bestExperiments.map((exp, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid rgba(36, 48, 68, 0.4)' }}>
-                    <td style={{ padding: '12px 16px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {exp.model_name}
-                    </td>
-                    <td style={{ padding: '12px 16px', color: 'var(--text-secondary)' }}>
-                      {exp.experiment_name}
-                    </td>
-                    <td style={{ padding: '12px 16px', color: 'var(--accent-cyan)' }}>
-                      {exp.dataset_name} ({exp.dataset_version_label})
-                    </td>
-                    <td style={{ padding: '12px 16px', textAlign: 'right', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, color: 'var(--accent-emerald)' }}>
-                      {Number(exp.accuracy).toFixed(4)}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={4} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                    No benchmark metrics found.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div style={{ gridColumn: 'span 6' }} className="df-col-full-mobile">
+          <Panel
+            title="TOP EXPERIMENT LEADERBOARD"
+            subtitle="Ranked by accuracy across all projects (v_experiment_leaderboard)"
+            rightSlot={<RingLegend label="TOP RUNS" color="amber" />}
+          >
+            {bestExperiments.length === 0 ? (
+              <EmptyState
+                icon={<Award size={20} />}
+                title="No Completed Experiments Ranked"
+                description="Run and complete experiments with accuracy telemetry."
+              />
+            ) : (
+              <div className="df-table-wrapper">
+                <table className="df-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>EXPERIMENT</th>
+                      <th>MODEL · DATASET</th>
+                      <th>ACCURACY</th>
+                      <th>F1 / AUC</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bestExperiments.map((exp, idx) => (
+                      <tr
+                        key={exp.experiment_id}
+                        onClick={() =>
+                          onNavigate('experiments', { experimentId: exp.experiment_id })
+                        }
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <td
+                          className="df-mono"
+                          style={{
+                            color: idx === 0 ? 'var(--accent-lime)' : 'var(--text-muted)',
+                            fontWeight: 700,
+                          }}
+                        >
+                          0{idx + 1}
+                        </td>
+                        <td>
+                          <div style={{ fontWeight: 700, color: '#FFF' }}>
+                            {exp.experiment_name}
+                          </div>
+                        </td>
+                        <td className="df-mono" style={{ fontSize: '0.74rem' }}>
+                          <div>
+                            {exp.model_name} ({exp.model_version_label})
+                          </div>
+                          <div style={{ color: 'var(--text-muted)' }}>
+                            {exp.dataset_name} ({exp.dataset_version_label})
+                          </div>
+                        </td>
+                        <td
+                          className="df-mono"
+                          style={{ color: 'var(--accent-lime)', fontWeight: 700 }}
+                        >
+                          {(Number(exp.accuracy || 0) * 100).toFixed(2)}%
+                        </td>
+                        <td className="df-mono" style={{ fontSize: '0.74rem' }}>
+                          <div>
+                            F1: {exp.f1_score ? Number(exp.f1_score).toFixed(3) : '—'}
+                          </div>
+                          <div style={{ color: 'var(--accent-amber)' }}>
+                            AUC: {exp.roc_auc ? Number(exp.roc_auc).toFixed(3) : '—'}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
         </div>
       </div>
     </div>
   );
 };
-

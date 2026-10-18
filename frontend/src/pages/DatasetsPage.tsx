@@ -3,24 +3,39 @@ import {
   Database,
   Plus,
   Search,
-  ArrowRight,
-  GitBranch
+  GitBranch,
+  GitFork,
+  GitCompare,
+  ArrowUpRight,
+  ArrowUpDown,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { Dataset, Project } from '../types';
-import { LoadingSpinner, ErrorState, EmptyState } from '../components/Common';
-import type { NavigationTab } from '../layouts/AppLayout';
+import type { Dataset, Project, NavigationTab } from '../types';
+import {
+  LoadingSpinner,
+  ErrorState,
+  EmptyState,
+  PageHeader,
+  Panel,
+  StatusBadge,
+  formatBytes,
+} from '../components/Common';
 
 interface DatasetsPageProps {
   initialProjectId?: string;
   onNavigate: (tab: NavigationTab, params?: any) => void;
 }
 
-export const DatasetsPage: React.FC<DatasetsPageProps> = ({ initialProjectId, onNavigate }) => {
+export const DatasetsPage: React.FC<DatasetsPageProps> = ({
+  initialProjectId,
+  onNavigate,
+}) => {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(initialProjectId || '');
   const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<string>('created_at');
+  const [sortOrder, setSortOrder] = useState<'ASC' | 'DESC'>('DESC');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,14 +44,17 @@ export const DatasetsPage: React.FC<DatasetsPageProps> = ({ initialProjectId, on
     setError(null);
     try {
       const [dsRes, projRes] = await Promise.all([
-        api.getDatasets(selectedProjectId ? { project_id: selectedProjectId } : undefined),
-        api.getProjects()
+        api.getDatasets({
+          project_id: selectedProjectId || undefined,
+          sortBy,
+          sortOrder,
+        }),
+        api.getProjects(),
       ]);
-
       setDatasets(dsRes);
       setProjects(projRes);
     } catch (err: any) {
-      setError(err.message || 'Error communicating with DataForge backend');
+      setError(err.message || 'Failed to load datasets from DataForge backend');
     } finally {
       setLoading(false);
     }
@@ -44,223 +62,375 @@ export const DatasetsPage: React.FC<DatasetsPageProps> = ({ initialProjectId, on
 
   useEffect(() => {
     fetchDatasets();
-  }, [selectedProjectId]);
+  }, [selectedProjectId, sortBy, sortOrder]);
 
-  const filteredDatasets = datasets.filter(d =>
-    d.name.toLowerCase().includes(search.toLowerCase()) ||
-    (d.description && d.description.toLowerCase().includes(search.toLowerCase())) ||
-    (d.tags && d.tags.some(t => t.toLowerCase().includes(search.toLowerCase())))
+  const filteredDatasets = datasets.filter(
+    (d) =>
+      d.name.toLowerCase().includes(search.toLowerCase()) ||
+      (d.description && d.description.toLowerCase().includes(search.toLowerCase())) ||
+      (d.project_name && d.project_name.toLowerCase().includes(search.toLowerCase())) ||
+      (d.tags && d.tags.some((t) => t.toLowerCase().includes(search.toLowerCase())))
+  );
+
+  const totalStorage = filteredDatasets.reduce(
+    (acc, d) => acc + Number(d.total_storage_bytes || 0),
+    0
+  );
+  const totalVersionsCount = filteredDatasets.reduce(
+    (acc, d) => acc + Number(d.total_versions || 0),
+    0
   );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Header Bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-        <div>
-          <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>
-            Dataset Catalog
-          </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-            Version-controlled datasets backed by immutable SHA-256 hashes and relational schemas.
-          </p>
+      <PageHeader
+        title="DATASET CATALOG"
+        badge={`${filteredDatasets.length} DATASETS`}
+        subtitle="Version-controlled tabular assets backed by SHA-256 content addressing and PostgreSQL column schemas."
+        actions={
+          <button
+            type="button"
+            onClick={() =>
+              onNavigate('register-dataset', {
+                projectId: selectedProjectId || undefined,
+              })
+            }
+            className="df-btn df-btn-lime"
+          >
+            <Plus size={16} />
+            Register &amp; Upload Dataset
+          </button>
+        }
+      />
+
+      {/* Filter & Sort Pill Bar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '12px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', flex: 1 }}>
+          {/* Search Input */}
+          <div style={{ position: 'relative', minWidth: '280px', flex: '1 1 280px', maxWidth: '420px' }}>
+            <Search
+              size={15}
+              color="var(--text-muted)"
+              style={{ position: 'absolute', left: '14px', top: '11px' }}
+            />
+            <input
+              type="text"
+              aria-label="Search datasets"
+              placeholder="Filter by dataset name, description, project, or tag..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="df-input"
+              style={{
+                paddingLeft: '38px',
+                borderRadius: 'var(--radius-pill)',
+                backgroundColor: 'var(--bg-surface)',
+              }}
+            />
+          </div>
+
+          {/* Project Pill Filter */}
+          <label className="df-pill-control" style={{ padding: '7px 15px' }}>
+            <span style={{ color: 'var(--text-muted)' }}>Project:</span>
+            <select
+              aria-label="Filter datasets by project"
+              value={selectedProjectId}
+              onChange={(e) => setSelectedProjectId(e.target.value)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-primary)',
+                fontWeight: 600,
+                fontSize: '13px',
+                outline: 'none',
+              }}
+            >
+              <option value="" style={{ backgroundColor: 'var(--bg-surface)' }}>
+                All Projects
+              </option>
+              {projects.map((p) => (
+                <option
+                  key={p.id}
+                  value={p.id}
+                  style={{ backgroundColor: 'var(--bg-surface)' }}
+                >
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* Sort By Pill */}
+          <label className="df-pill-control" style={{ padding: '7px 15px' }}>
+            <ArrowUpDown size={14} color="var(--accent-lime)" />
+            <span style={{ color: 'var(--text-muted)' }}>Sort:</span>
+            <select
+              aria-label="Sort datasets by field"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-primary)',
+                fontWeight: 600,
+                fontSize: '13px',
+                outline: 'none',
+              }}
+            >
+              <option value="created_at" style={{ backgroundColor: 'var(--bg-surface)' }}>
+                Created Date
+              </option>
+              <option value="name" style={{ backgroundColor: 'var(--bg-surface)' }}>
+                Dataset Name
+              </option>
+              <option value="total_versions" style={{ backgroundColor: 'var(--bg-surface)' }}>
+                Version Count
+              </option>
+              <option value="total_storage_bytes" style={{ backgroundColor: 'var(--bg-surface)' }}>
+                Storage Size
+              </option>
+            </select>
+          </label>
+
+          <button
+            type="button"
+            onClick={() => setSortOrder((prev) => (prev === 'DESC' ? 'ASC' : 'DESC'))}
+            className="df-pill-control font-mono"
+            style={{ padding: '7px 14px', fontSize: '12px' }}
+          >
+            {sortOrder}
+          </button>
         </div>
 
-        <button
-          onClick={() => onNavigate('register-dataset', { projectId: selectedProjectId || undefined })}
+        {/* Summary Telemetry Strip */}
+        <div
+          className="font-mono"
           style={{
-            backgroundColor: 'var(--accent-cyan)',
-            color: '#FFFFFF',
-            padding: '10px 18px',
-            borderRadius: 'var(--radius-md)',
-            fontWeight: 600,
-            fontSize: '14px',
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
+            gap: '16px',
+            fontSize: '12px',
+            color: 'var(--text-secondary)',
           }}
         >
-          <Plus size={18} />
-          Register New Dataset
-        </button>
-      </div>
-
-      {/* Filter and Search Bar */}
-      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-        {/* Project Selector */}
-        <div style={{ minWidth: '220px' }}>
-          <select
-            value={selectedProjectId}
-            onChange={(e) => setSelectedProjectId(e.target.value)}
-            style={{
-              width: '100%',
-              backgroundColor: 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '10px 14px',
-              color: 'var(--text-primary)',
-              fontSize: '14px',
-              outline: 'none',
-            }}
-          >
-            <option value="">All Projects</option>
-            {projects.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Search */}
-        <div style={{ position: 'relative', flex: 1, minWidth: '280px' }}>
-          <Search size={18} color="var(--text-muted)" style={{ position: 'absolute', left: '12px', top: '11px' }} />
-          <input
-            type="text"
-            placeholder="Search datasets by name, description, or tag..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{
-              width: '100%',
-              backgroundColor: 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '10px 14px 10px 38px',
-              color: 'var(--text-primary)',
-              fontSize: '14px',
-              outline: 'none',
-            }}
-          />
+          <span>
+            Versions: <strong style={{ color: 'var(--accent-lime)' }}>{totalVersionsCount}</strong>
+          </span>
+          <span>
+            Footprint: <strong style={{ color: 'var(--accent-amber)' }}>{formatBytes(totalStorage)}</strong>
+          </span>
         </div>
       </div>
 
-      {/* Datasets Table / List */}
+      {/* Main Dataset Catalog Table */}
       {loading ? (
-        <LoadingSpinner message="Querying dataset catalog and latest version stats..." />
+        <LoadingSpinner message="Querying dataset_summary_view in PostgreSQL..." />
       ) : error ? (
-        <ErrorState title="Datasets Loading Error" message={error} onRetry={fetchDatasets} />
+        <ErrorState title="Dataset Catalog Error" message={error} onRetry={fetchDatasets} />
       ) : filteredDatasets.length === 0 ? (
         <EmptyState
           title="No Datasets Found"
-          description={search ? `No datasets matching "${search}"` : "No datasets registered in this project yet."}
+          description={
+            search
+              ? `No datasets matched "${search}".`
+              : 'No datasets registered in this workspace yet. Upload a CSV to initialize a dataset.'
+          }
           actionText="Register Dataset"
-          onAction={() => onNavigate('register-dataset', { projectId: selectedProjectId || undefined })}
-          icon={<Database size={36} />}
+          onAction={() =>
+            onNavigate('register-dataset', {
+              projectId: selectedProjectId || undefined,
+            })
+          }
+          icon={<Database size={28} />}
         />
       ) : (
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden'
-        }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-            <thead>
-              <tr style={{
-                backgroundColor: 'var(--bg-card)',
-                borderBottom: '1px solid var(--border)',
-                color: 'var(--text-muted)',
-                fontWeight: 600
-              }}>
-                <th style={{ padding: '14px 20px' }}>Dataset Name</th>
-                <th style={{ padding: '14px 16px' }}>Project</th>
-                <th style={{ padding: '14px 16px' }}>Versions</th>
-                <th style={{ padding: '14px 16px' }}>Rows</th>
-                <th style={{ padding: '14px 16px' }}>Created</th>
-                <th style={{ padding: '14px 20px', textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredDatasets.map((ds) => (
-                <tr
-                  key={ds.id}
-                  style={{
-                    borderBottom: '1px solid rgba(36, 48, 68, 0.4)',
-                    transition: 'background 0.1s ease',
-                    cursor: 'pointer'
-                  }}
-                  onClick={() => onNavigate('dataset-detail', { datasetId: ds.id })}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)'}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                >
-                  <td style={{ padding: '16px 20px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <div style={{
-                        padding: '8px',
-                        borderRadius: 'var(--radius-sm)',
-                        backgroundColor: 'rgba(14, 165, 233, 0.1)',
-                        color: 'var(--accent-cyan)'
-                      }}>
-                        <Database size={16} />
-                      </div>
-                      <div>
-                        <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '14px' }}>
-                          {ds.name}
-                        </div>
-                        <div style={{ color: 'var(--text-secondary)', fontSize: '12px', maxWidth: '360px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {ds.description || 'No description provided'}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-
-                  <td style={{ padding: '16px 16px', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                    {ds.project_name || 'Project'}
-                  </td>
-
-                  <td style={{ padding: '16px 16px' }}>
-                    <span style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      padding: '3px 8px',
-                      borderRadius: 'var(--radius-sm)',
-                      backgroundColor: 'var(--bg-card)',
-                      border: '1px solid var(--border)',
-                      fontFamily: 'JetBrains Mono, monospace',
-                      fontSize: '11px',
-                      color: 'var(--accent-cyan)',
-                      fontWeight: 600
-                    }}>
-                      <GitBranch size={11} />
-                      {ds.total_versions || 1} versions
-                    </span>
-                  </td>
-
-                  <td style={{ padding: '16px 16px', color: 'var(--text-primary)', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {ds.latest_row_count ?? '—'}
-                  </td>
-
-                  <td style={{ padding: '16px 16px', color: 'var(--text-muted)', fontSize: '12px' }}>
-                    {new Date(ds.created_at).toLocaleDateString()}
-                  </td>
-
-                  <td style={{ padding: '16px 20px', textAlign: 'right' }}>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onNavigate('dataset-detail', { datasetId: ds.id });
-                      }}
-                      style={{
-                        color: 'var(--accent-cyan)',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        padding: '6px 12px',
-                        borderRadius: 'var(--radius-sm)',
-                        backgroundColor: 'var(--bg-card)',
-                        border: '1px solid var(--border)'
-                      }}
-                    >
-                      Inspect <ArrowRight size={13} />
-                    </button>
-                  </td>
+        <Panel
+          title="CATALOGED DATASETS"
+          subtitle="Click any dataset row to inspect schema columns, version history, and lineage"
+          legend={[
+            { label: 'Validated / Active', color: 'lime' },
+            { label: 'Versioned Storage', color: 'amber' },
+            { label: 'Tabular Schema', color: 'white' },
+          ]}
+          totalLabel="Total Catalog Storage"
+          totalValue={formatBytes(totalStorage)}
+          flush
+        >
+          <div className="df-table-wrapper">
+            <table className="df-table">
+              <thead>
+                <tr>
+                  <th>Dataset Identity</th>
+                  <th>Project</th>
+                  <th>Status / Type</th>
+                  <th>Versions</th>
+                  <th>Latest Rows</th>
+                  <th>Storage</th>
+                  <th style={{ textAlign: 'right' }}>Operations</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {filteredDatasets.map((ds) => {
+                  const verCount = Number(ds.total_versions || 0);
+                  const latestVer = Number(ds.latest_version_number || 0);
+                  return (
+                    <tr
+                      key={ds.id}
+                      onClick={() => onNavigate('dataset-detail', { datasetId: ds.id })}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <div
+                            style={{
+                              width: '36px',
+                              height: '36px',
+                              borderRadius: '50%',
+                              backgroundColor: 'var(--bg-card)',
+                              border: '1px solid var(--border)',
+                              color: 'var(--accent-lime)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              flexShrink: 0,
+                            }}
+                          >
+                            <Database size={16} />
+                          </div>
+                          <div>
+                            <div
+                              style={{
+                                fontWeight: 700,
+                                fontSize: '14px',
+                                color: 'var(--text-primary)',
+                              }}
+                            >
+                              {ds.name}
+                            </div>
+                            <div
+                              style={{
+                                fontSize: '12px',
+                                color: 'var(--text-secondary)',
+                                maxWidth: '340px',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {ds.description || 'No description provided'}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td>
+                        <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+                          {ds.project_name ||
+                            projects.find((p) => p.id === ds.project_id)?.name ||
+                            'Project'}
+                        </span>
+                      </td>
+
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <StatusBadge status={ds.status || 'Active'} />
+                          <span
+                            className="font-mono"
+                            style={{
+                              fontSize: '11px',
+                              color: 'var(--text-muted)',
+                              padding: '2px 7px',
+                              borderRadius: '999px',
+                              backgroundColor: 'var(--bg-card)',
+                            }}
+                          >
+                            {ds.type || 'TABULAR'}
+                          </span>
+                        </div>
+                      </td>
+
+                      <td>
+                        <span
+                          className="font-mono"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            padding: '4px 10px',
+                            borderRadius: 'var(--radius-pill)',
+                            backgroundColor:
+                              verCount > 0 ? 'var(--accent-lime-dim)' : 'var(--bg-card)',
+                            color:
+                              verCount > 0 ? 'var(--accent-lime)' : 'var(--text-muted)',
+                            fontSize: '11.5px',
+                            fontWeight: 700,
+                          }}
+                        >
+                          <GitBranch size={12} />
+                          {verCount} (v{latestVer})
+                        </span>
+                      </td>
+
+                      <td className="font-mono" style={{ fontWeight: 600 }}>
+                        {Number(ds.latest_row_count || 0).toLocaleString()}
+                      </td>
+
+                      <td className="font-mono" style={{ color: 'var(--accent-amber)', fontWeight: 600 }}>
+                        {formatBytes(ds.total_storage_bytes)}
+                      </td>
+
+                      <td style={{ textAlign: 'right' }}>
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('versions', { datasetId: ds.id })}
+                            title="Version History & Diff"
+                            className="df-btn df-btn-secondary"
+                            style={{ padding: '6px 10px', fontSize: '11.5px' }}
+                          >
+                            <GitCompare size={13} /> Diff
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('lineage', { datasetId: ds.id })}
+                            title="Explore Lineage Graph"
+                            className="df-btn df-btn-secondary"
+                            style={{ padding: '6px 10px', fontSize: '11.5px' }}
+                          >
+                            <GitFork size={13} /> DAG
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('dataset-detail', { datasetId: ds.id })}
+                            className="df-btn df-btn-lime"
+                            style={{ padding: '6px 12px', fontSize: '11.5px' }}
+                          >
+                            Inspect <ArrowUpRight size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
       )}
     </div>
   );
 };
-
