@@ -8,6 +8,22 @@ export interface ApiResponse<T> {
   };
 }
 
+export type NavigationTab =
+  | 'dashboard'
+  | 'projects'
+  | 'datasets'
+  | 'register-dataset'
+  | 'dataset-detail'
+  | 'versions'
+  | 'models'
+  | 'experiments'
+  | 'lineage'
+  | 'analytics'
+  | 'similarity'
+  | 'drift'
+  | 'activity'
+  | 'users';
+
 export interface User {
   id: string;
   name: string;
@@ -52,7 +68,7 @@ export interface Dataset {
   created_by?: string | null;
   created_at: string;
   updated_at: string;
-  latest_version_number?: number;
+  latest_version_number?: number | string;
   latest_version_label?: string;
   total_versions?: number | string;
   total_storage_bytes?: number | string;
@@ -144,7 +160,7 @@ export interface Experiment {
   name: string;
   dataset_version_id: string;
   model_version_id: string;
-  status: 'PLANNED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'Pending' | 'Running' | 'Completed' | 'Failed';
+  status: 'PLANNED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'Pending' | 'Running' | 'Completed' | 'Failed' | string;
   started_at?: string | null;
   completed_at?: string | null;
   notes?: string | null;
@@ -156,8 +172,10 @@ export interface Experiment {
   f1_score?: number | string | null;
   loss?: number | string | null;
   roc_auc?: number | string | null;
+  extra_metrics?: Record<string, any>;
   model_name?: string;
   model_version_label?: string;
+  algorithm?: string;
   dataset_name?: string;
   dataset_version_label?: string;
 }
@@ -175,23 +193,27 @@ export interface ExperimentMetric {
   recorded_at: string;
 }
 
+export interface LineageNode {
+  id: string;
+  type: 'DATASET' | 'DATASET_VERSION' | 'MODEL_VERSION' | 'EXPERIMENT';
+  label: string;
+  status?: string;
+  framework?: string;
+  accuracy?: number;
+  metadata?: any;
+}
+
+export interface LineageEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+}
+
 export interface LineageGraph {
   dataset: Dataset;
-  nodes: Array<{
-    id: string;
-    type: 'DATASET' | 'DATASET_VERSION' | 'MODEL_VERSION' | 'EXPERIMENT';
-    label: string;
-    status?: string;
-    framework?: string;
-    accuracy?: number;
-    metadata?: any;
-  }>;
-  edges: Array<{
-    id: string;
-    source: string;
-    target: string;
-    type: string;
-  }>;
+  nodes: LineageNode[];
+  edges: LineageEdge[];
 }
 
 export interface VersionLineage {
@@ -228,8 +250,35 @@ export interface VersionLineage {
     name: string;
     status: string;
     accuracy?: number;
+    f1_score?: number;
     loss?: number;
   }>;
+}
+
+export interface ColumnDriftDetail {
+  column_name: string;
+  data_type: string;
+  base_mean?: number;
+  comp_mean?: number;
+  mean_shift?: number;
+  relative_shift?: number;
+  drift_detected: boolean;
+}
+
+export interface DriftDetails {
+  base_rows?: number;
+  comp_rows?: number;
+  row_count_diff?: number;
+  added_columns?: string[];
+  removed_columns?: string[];
+  column_drift?: ColumnDriftDetail[];
+  drift_status?: 'NONE' | 'LOW' | 'MODERATE' | 'HIGH';
+  // Fields when details comes from compareVersions in checkSimilarity
+  jaccard_similarity?: number;
+  shared_columns?: string[];
+  file_size_diff_bytes?: number;
+  exact_checksum_match?: boolean;
+  [key: string]: any;
 }
 
 export interface DatasetSimilarity {
@@ -242,7 +291,7 @@ export interface DatasetSimilarity {
   column_overlap_count?: number;
   schema_match_ratio?: number;
   shared_columns?: string[];
-  details?: Record<string, any>;
+  details?: DriftDetails;
   created_at: string;
 }
 
@@ -277,13 +326,21 @@ export interface ExperimentAnalyticsResponse {
   best_experiments: Array<{
     experiment_id: string;
     experiment_name: string;
+    model_id?: string;
     model_name: string;
+    model_version_id?: string;
     model_version_label: string;
     algorithm: string;
+    dataset_id?: string;
     dataset_name: string;
+    dataset_version_id?: string;
     dataset_version_label: string;
     accuracy: number;
+    precision_score?: number;
+    recall_score?: number;
+    f1_score?: number;
     loss: number;
+    roc_auc?: number;
     model_rank: number;
   }>;
   high_performing_models: Array<{
@@ -317,4 +374,3 @@ export interface SystemHealth {
   timestamp: string;
   version: string;
 }
-

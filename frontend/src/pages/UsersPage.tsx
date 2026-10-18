@@ -1,350 +1,488 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { api } from '../api/client';
+import type {
+  User,
+  Project,
+  NavigationTab,
+} from '../types';
+import {
+  PageHeader,
+  Panel,
+  LoadingSpinner,
+  ErrorState,
+  EmptyState,
+  Modal,
+  StatusBadge,
+  ToastNotification,
+  formatShortDate,
+} from '../components/Common';
 import {
   Users,
-  Plus,
-  Search
+  UserPlus,
+  Search,
+  FolderKanban,
 } from 'lucide-react';
-import { api } from '../api/client';
-import type { User } from '../types';
-import { LoadingSpinner, ErrorState, EmptyState, Modal, ToastNotification } from '../components/Common';
-import type { NavigationTab } from '../layouts/AppLayout';
 
 interface UsersPageProps {
-  onNavigate: (tab: NavigationTab, params?: any) => void;
+  onNavigate: (tab: NavigationTab, params?: Record<string, string>) => void;
 }
 
 export const UsersPage: React.FC<UsersPageProps> = () => {
   const [users, setUsers] = useState<User[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+
+  const [roleFilter, setRoleFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const [search, setSearch] = useState('');
 
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    type: 'success' | 'error' | 'info';
+  } | null>(null);
+
   // Create User Modal
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [email, setEmail] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [role, setRole] = useState<'ADMIN' | 'DATA_ENGINEER' | 'VIEWER'>('DATA_ENGINEER');
-  const [submitting, setSubmitting] = useState(false);
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [newEmail, setNewEmail] = useState('');
+  const [newFullName, setNewFullName] = useState('');
+  const [newRole, setNewRole] = useState<string>('RESEARCHER');
+  const [creatingUser, setCreatingUser] = useState(false);
 
-  // Toast
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  // Assign User to Project Modal
+  const [assignTargetUser, setAssignTargetUser] = useState<User | null>(null);
+  const [assignProjectId, setAssignProjectId] = useState('');
+  const [assignProjectRole, setAssignProjectRole] = useState<string>('CONTRIBUTOR');
+  const [assigning, setAssigning] = useState(false);
 
-  const fetchUsers = async () => {
+  const loadDirectory = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.getUsers();
-      setUsers(res);
+      const [uList, pList] = await Promise.all([
+        api.getUsers({
+          role: roleFilter || undefined,
+          status: statusFilter || undefined,
+        }),
+        api.getProjects(),
+      ]);
+
+      setUsers(uList || []);
+      setProjects(pList || []);
+      if (pList.length > 0 && !assignProjectId) {
+        setAssignProjectId(pList[0].id);
+      }
     } catch (err: any) {
-      setError(err.message || 'Error communicating with DataForge backend');
+      setError(err.message || 'Failed to load personnel directory');
     } finally {
       setLoading(false);
     }
-  };
+  }, [roleFilter, statusFilter, assignProjectId]);
 
   useEffect(() => {
-    fetchUsers();
-  }, []);
+    loadDirectory();
+  }, [loadDirectory]);
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !fullName.trim()) {
-      setToast({ type: 'error', message: 'Email and Full Name are required.' });
-      return;
-    }
-
-    setSubmitting(true);
+    if (!newEmail.trim() || !newFullName.trim()) return;
+    setCreatingUser(true);
     try {
-      const res = await api.createUser({
-        email: email.trim(),
-        name: fullName.trim(),
-        role
+      const created = await api.createUser({
+        email: newEmail.trim(),
+        name: newFullName.trim(),
+        role: newRole,
       });
-
-      setToast({ type: 'success', message: `User "${res.name}" registered!` });
-      setIsModalOpen(false);
-      setEmail('');
-      setFullName('');
-      await fetchUsers();
+      setToast({ message: `Registered researcher "${created.name}"`, type: 'success' });
+      setShowCreateUser(false);
+      setNewEmail('');
+      setNewFullName('');
+      await loadDirectory();
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Failed to register user' });
+      setToast({ message: err.message || 'Failed to create user', type: 'error' });
     } finally {
-      setSubmitting(false);
+      setCreatingUser(false);
     }
   };
 
-  const filteredUsers = users.filter(u =>
-    u.name.toLowerCase().includes(search.toLowerCase()) ||
-    u.email.toLowerCase().includes(search.toLowerCase()) ||
-    u.role.toLowerCase().includes(search.toLowerCase())
-  );
-
-  const getRoleBadge = (userRole: string) => {
-    switch (userRole) {
-      case 'ADMIN':
-      case 'Admin':
-        return { bg: 'rgba(244, 63, 94, 0.1)', color: 'var(--accent-rose)', border: 'rgba(244, 63, 94, 0.3)' };
-      case 'DATA_ENGINEER':
-      case 'Data Engineer':
-        return { bg: 'rgba(14, 165, 233, 0.1)', color: 'var(--accent-cyan)', border: 'rgba(14, 165, 233, 0.3)' };
-      default:
-        return { bg: 'rgba(255, 255, 255, 0.05)', color: 'var(--text-muted)', border: 'var(--border)' };
+  const handleAssignToProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!assignTargetUser || !assignProjectId) return;
+    setAssigning(true);
+    try {
+      await api.addProjectMember(assignProjectId, {
+        user_id: assignTargetUser.id,
+        role: assignProjectRole,
+      });
+      setToast({
+        message: `Assigned ${assignTargetUser.name} to project as ${assignProjectRole}`,
+        type: 'success',
+      });
+      setAssignTargetUser(null);
+    } catch (err: any) {
+      setToast({ message: err.message || 'Failed to assign user to project', type: 'error' });
+    } finally {
+      setAssigning(false);
     }
   };
+
+  const filteredUsers = users.filter((u) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      (u.name || '').toLowerCase().includes(q) ||
+      u.email.toLowerCase().includes(q) ||
+      u.role.toLowerCase().includes(q)
+    );
+  });
+
+  if (loading && users.length === 0 && !roleFilter && !statusFilter) {
+    return <LoadingSpinner message="Loading laboratory personnel directory..." />;
+  }
+
+  if (error && users.length === 0) {
+    return <ErrorState message={error} onRetry={loadDirectory} />;
+  }
+
+  const adminCount = users.filter((u) => u.role.toUpperCase() === 'ADMIN').length;
+  const researcherCount = users.filter((u) => u.role.toUpperCase() === 'RESEARCHER').length;
+  const viewerCount = users.filter((u) => u.role.toUpperCase() === 'VIEWER').length;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Header Bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-        <div>
-          <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>
-            Team & Platform Users
-          </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-            User identities and roles participating in projects and committing dataset versions.
-          </p>
-        </div>
-
-        <button
-          onClick={() => setIsModalOpen(true)}
-          style={{
-            backgroundColor: 'var(--accent-cyan)',
-            color: '#FFFFFF',
-            padding: '10px 18px',
-            borderRadius: 'var(--radius-md)',
-            fontWeight: 600,
-            fontSize: '14px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-          }}
-        >
-          <Plus size={18} />
-          Add User
-        </button>
-      </div>
-
-      {/* Search Input */}
-      <div style={{ position: 'relative', maxWidth: '420px', width: '100%' }}>
-        <Search size={18} color="var(--text-muted)" style={{ position: 'absolute', left: '12px', top: '11px' }} />
-        <input
-          type="text"
-          placeholder="Search team members by name, email, or role..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{
-            width: '100%',
-            backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)',
-            padding: '10px 14px 10px 38px',
-            color: 'var(--text-primary)',
-            fontSize: '14px',
-            outline: 'none',
-          }}
+    <div>
+      {toast && (
+        <ToastNotification
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
         />
-      </div>
-
-      {/* Users Table */}
-      {loading ? (
-        <LoadingSpinner message="Querying team accounts from PostgreSQL..." />
-      ) : error ? (
-        <ErrorState title="Users Error" message={error} onRetry={fetchUsers} />
-      ) : filteredUsers.length === 0 ? (
-        <EmptyState
-          title="No Users Found"
-          description="No users matched your search criteria."
-          icon={<Users size={36} />}
-        />
-      ) : (
-        <div style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
-          overflow: 'hidden'
-        }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-            <thead>
-              <tr style={{ backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-                <th style={{ padding: '14px 20px' }}>Full Name</th>
-                <th style={{ padding: '14px 16px' }}>Email Address</th>
-                <th style={{ padding: '14px 16px' }}>Role</th>
-                <th style={{ padding: '14px 20px', textAlign: 'right' }}>Joined</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredUsers.map((u) => {
-                const badge = getRoleBadge(u.role);
-                return (
-                  <tr key={u.id} style={{ borderBottom: '1px solid rgba(36, 48, 68, 0.4)' }}>
-                    <td style={{ padding: '16px 20px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <div style={{
-                          width: '32px',
-                          height: '32px',
-                          borderRadius: '50%',
-                          backgroundColor: 'var(--bg-card)',
-                          border: '1px solid var(--border)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: '13px',
-                          fontWeight: 600,
-                          color: 'var(--accent-cyan)'
-                        }}>
-                          {u.name.charAt(0)}
-                        </div>
-                        <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{u.name}</span>
-                      </div>
-                    </td>
-
-                    <td style={{ padding: '16px 16px', color: 'var(--text-secondary)' }}>
-                      {u.email}
-                    </td>
-
-                    <td style={{ padding: '16px 16px' }}>
-                      <span style={{
-                        display: 'inline-block',
-                        padding: '3px 8px',
-                        borderRadius: 'var(--radius-sm)',
-                        fontFamily: 'JetBrains Mono, monospace',
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        backgroundColor: badge.bg,
-                        color: badge.color,
-                        border: `1px solid ${badge.border}`
-                      }}>
-                        {u.role}
-                      </span>
-                    </td>
-
-                    <td style={{ padding: '16px 20px', textAlign: 'right', color: 'var(--text-muted)', fontSize: '12px' }}>
-                      {new Date(u.created_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
       )}
 
-      {/* Modal: Create User */}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title="Add Team Member"
+      <PageHeader
+        eyebrow="PERSONNEL DIRECTORY & ACCESS GOVERNANCE"
+        title="USERS & PROJECT MEMBERS"
+        subtitle="Manage academic researchers, role-based access levels, and project membership assignments."
+        actions={
+          <button
+            type="button"
+            className="df-btn df-btn--primary"
+            onClick={() => setShowCreateUser(true)}
+          >
+            <UserPlus size={14} /> Register Researcher
+          </button>
+        }
+      />
+
+      {/* Summary Role Cards */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+          gap: 16,
+          marginBottom: 16,
+        }}
       >
-        <form onSubmit={handleCreateUser} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              Full Name <span style={{ color: 'var(--accent-rose)' }}>*</span>
-            </label>
+        <Panel>
+          <div className="df-card-label">TOTAL PERSONNEL</div>
+          <div className="df-stat-number df-stat-number--md" style={{ marginTop: 6 }}>
+            {users.length}
+          </div>
+        </Panel>
+        <Panel>
+          <div className="df-card-label">SYSTEM ADMINS</div>
+          <div
+            className="df-stat-number df-stat-number--md"
+            style={{ marginTop: 6, color: 'var(--accent-lime)' }}
+          >
+            {adminCount}
+          </div>
+        </Panel>
+        <Panel>
+          <div className="df-card-label">RESEARCHERS</div>
+          <div
+            className="df-stat-number df-stat-number--md"
+            style={{ marginTop: 6, color: 'var(--accent-amber)' }}
+          >
+            {researcherCount}
+          </div>
+        </Panel>
+        <Panel>
+          <div className="df-card-label">READ-ONLY VIEWERS</div>
+          <div className="df-stat-number df-stat-number--md" style={{ marginTop: 6 }}>
+            {viewerCount}
+          </div>
+        </Panel>
+      </div>
+
+      {/* Filter Bar */}
+      <Panel style={{ marginBottom: 16, padding: '14px 18px' }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
+            <Search
+              size={14}
+              style={{
+                position: 'absolute',
+                left: 12,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: 'var(--text-muted)',
+              }}
+            />
             <input
               type="text"
-              placeholder="e.g. Dr. Alan Turing"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
+              className="df-input"
+              placeholder="Search researchers by name or email..."
+              style={{ paddingLeft: 34 }}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <select
+            className="df-select"
+            style={{ width: 180 }}
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            aria-label="Filter by Role"
+          >
+            <option value="">All Roles</option>
+            <option value="ADMIN">ADMIN</option>
+            <option value="RESEARCHER">RESEARCHER</option>
+            <option value="DATA_ENGINEER">DATA_ENGINEER</option>
+            <option value="VIEWER">VIEWER</option>
+          </select>
+
+          <select
+            className="df-select"
+            style={{ width: 170 }}
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            aria-label="Filter by Status"
+          >
+            <option value="">All Statuses</option>
+            <option value="ACTIVE">ACTIVE</option>
+            <option value="INACTIVE">INACTIVE</option>
+          </select>
+        </div>
+      </Panel>
+
+      {/* Personnel Table */}
+      <Panel
+        title={`RESEARCHER DIRECTORY (${filteredUsers.length})`}
+        subtitle="Assign users directly to research projects or inspect their role permissions"
+      >
+        {filteredUsers.length === 0 ? (
+          <EmptyState
+            icon={<Users size={22} />}
+            title="No Researchers Found"
+            description="Register a new researcher or clear active search filters."
+            actionLabel="Register Researcher"
+            onAction={() => setShowCreateUser(true)}
+          />
+        ) : (
+          <div className="df-table-wrapper">
+            <table className="df-table">
+              <thead>
+                <tr>
+                  <th>RESEARCHER</th>
+                  <th>EMAIL ADDRESS</th>
+                  <th>SYSTEM ROLE</th>
+                  <th>STATUS</th>
+                  <th>JOINED</th>
+                  <th style={{ textAlign: 'right' }}>PROJECT ASSIGNMENT</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUsers.map((user) => (
+                  <tr key={user.id}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div
+                          style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: '50%',
+                            background: 'rgba(184, 255, 98, 0.12)',
+                            border: '1px solid rgba(184, 255, 98, 0.35)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'var(--accent-lime)',
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '0.76rem',
+                            fontWeight: 700,
+                          }}
+                        >
+                          {(user.name || 'U')
+                            .split(' ')
+                            .map((n) => n[0])
+                            .join('')
+                            .slice(0, 2)
+                            .toUpperCase()}
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 700, color: '#FFF' }}>{user.name}</div>
+                          <div
+                            className="df-mono"
+                            style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}
+                          >
+                            ID: {user.id.slice(0, 8)}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="df-mono" style={{ fontSize: '0.8rem' }}>
+                      {user.email}
+                    </td>
+                    <td>
+                      <StatusBadge status={user.role} size="sm" />
+                    </td>
+                    <td>
+                      <StatusBadge status={user.status} size="sm" />
+                    </td>
+                    <td
+                      className="df-mono"
+                      style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}
+                    >
+                      {formatShortDate(user.created_at)}
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button
+                        type="button"
+                        className="df-btn df-btn--secondary df-btn--sm"
+                        onClick={() => setAssignTargetUser(user)}
+                      >
+                        <FolderKanban size={12} /> Assign to Project
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {/* Create User Modal */}
+      <Modal
+        isOpen={showCreateUser}
+        onClose={() => setShowCreateUser(false)}
+        title="REGISTER LABORATORY RESEARCHER"
+        subtitle="Add a new user account to the DataForge PostgreSQL directory"
+      >
+        <form
+          onSubmit={handleCreateUser}
+          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+        >
+          <div>
+            <label className="df-label">FULL NAME *</label>
+            <input
+              type="text"
+              className="df-input"
+              placeholder="e.g., Dr. Elena Vance"
+              value={newFullName}
+              onChange={(e) => setNewFullName(e.target.value)}
               required
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '10px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px'
-              }}
             />
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              Email Address <span style={{ color: 'var(--accent-rose)' }}>*</span>
-            </label>
+            <label className="df-label">INSTITUTIONAL EMAIL *</label>
             <input
               type="email"
-              placeholder="e.g. alan.turing@cambridge.ac.uk"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              className="df-input df-mono"
+              placeholder="elena.vance@university.edu"
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
               required
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '10px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px'
-              }}
             />
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-              Platform Role
-            </label>
+            <label className="df-label">SYSTEM ROLE *</label>
             <select
-              value={role}
-              onChange={(e) => setRole(e.target.value as any)}
-              style={{
-                width: '100%',
-                backgroundColor: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '10px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px'
-              }}
+              className="df-select"
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value)}
             >
-              <option value="DATA_ENGINEER">Data Engineer (Pipelines & Datasets)</option>
-              <option value="ADMIN">Admin (Full Access)</option>
-              <option value="VIEWER">Viewer (Read Only)</option>
+              <option value="RESEARCHER">
+                RESEARCHER (Create & manage datasets, models, runs)
+              </option>
+              <option value="DATA_ENGINEER">DATA_ENGINEER (Pipelines & ingestion)</option>
+              <option value="ADMIN">ADMIN (Full laboratory governance)</option>
+              <option value="VIEWER">VIEWER (Read-only inspection)</option>
             </select>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
             <button
               type="button"
-              onClick={() => setIsModalOpen(false)}
-              style={{
-                padding: '8px 14px',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--border)',
-                color: 'var(--text-secondary)',
-                fontSize: '13px'
-              }}
+              className="df-btn df-btn--secondary"
+              onClick={() => setShowCreateUser(false)}
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              style={{
-                backgroundColor: 'var(--accent-cyan)',
-                color: '#FFFFFF',
-                padding: '8px 16px',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '13px',
-                fontWeight: 600,
-                opacity: submitting ? 0.7 : 1
-              }}
-            >
-              {submitting ? 'Registering...' : 'Register User'}
+            <button type="submit" className="df-btn df-btn--primary" disabled={creatingUser}>
+              {creatingUser ? 'Registering...' : 'Register Researcher'}
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Toast Alert */}
-      {toast && (
-        <ToastNotification
-          type={toast.type}
-          message={toast.message}
-          onClose={() => setToast(null)}
-        />
-      )}
+      {/* Assign User to Project Modal */}
+      <Modal
+        isOpen={Boolean(assignTargetUser)}
+        onClose={() => setAssignTargetUser(null)}
+        title={`ASSIGN TO PROJECT — ${assignTargetUser?.name || ''}`}
+        subtitle="Grant or update project-level permissions via POST /api/projects/:id/members"
+      >
+        <form
+          onSubmit={handleAssignToProject}
+          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+        >
+          <div>
+            <label className="df-label">SELECT RESEARCH PROJECT *</label>
+            <select
+              className="df-select"
+              value={assignProjectId}
+              onChange={(e) => setAssignProjectId(e.target.value)}
+              required
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="df-label">PROJECT MEMBERSHIP ROLE *</label>
+            <select
+              className="df-select"
+              value={assignProjectRole}
+              onChange={(e) => setAssignProjectRole(e.target.value)}
+            >
+              <option value="CONTRIBUTOR">CONTRIBUTOR</option>
+              <option value="OWNER">OWNER</option>
+              <option value="VIEWER">VIEWER</option>
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+            <button
+              type="button"
+              className="df-btn df-btn--secondary"
+              onClick={() => setAssignTargetUser(null)}
+            >
+              Cancel
+            </button>
+            <button type="submit" className="df-btn df-btn--primary" disabled={assigning}>
+              {assigning ? 'Assigning...' : 'Confirm Assignment'}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };
-
